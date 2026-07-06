@@ -1,0 +1,47 @@
+# This repository is an *examples* repo: it does not build the `bionc` package (that lives in
+# https://github.com/Ipuch/bioNC and is installed separately, e.g. from the `bionc` conda env).
+# Only project metadata and the dependencies needed to run the examples are declared below.
+
+[project]
+name = "bionc-for-shoulder"
+version = "0.11.0"
+authors = [{name = "Pierre Puchaud", email = "puchaud.pierre@gmail.com"}]
+maintainers = [{name = "Pierre Puchaud", email = "puchaud.pierre@gmail.com"}]
+description = "Pedagogical bioNC examples and studies for the shoulder complex"
+license = {file = "LICENSE.md"}
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+         "Programming Language :: Python :: 3",
+         "License :: OSI Approved :: MIT License",
+         "Operating System :: OS Independent",
+     ]
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "packaging",
+    "ezc3d",
+    "plotly",
+    "pyorerun",
+    "dill",
+    "pyomeca",
+    "numba",
+    "proxsuite",
+    # "biorbd" # Not yet available on pypi, use `conda install -c conda-forge biorbd`
+]
+keywords = [
+    "inverse-kinematics",
+    "biomechanics",
+    "multibody-dynamics",
+    "mechanics",
+    "motion-analysis",
+    "kinesiology",
+    "inverse-dynamics",
+    "cartesian-coordinates",
+    "forward-dynamics",
+    "holonomic-constraints",
+    "natural-coordinates"
+]
+[project.urls]
+homepage = "http://github.com/Ipuch/bionc"
+bionc = "https://github.com/Ipuch/bioNC"

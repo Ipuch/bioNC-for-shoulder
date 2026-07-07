@@ -16,7 +16,11 @@ python studies/gh_constraint_comparison.py
 | --- | --- | --- |
 | [`gh_constraint_comparison.py`](gh_constraint_comparison.py) | Henninger | How does constraining only the glenohumeral joint (free vs spherical vs constant-length) affect the marker fit (RMSE) and the joint angles, relative to a fully-free "raw" reconstruction? |
 | [`marker_set_comparison.py`](marker_set_comparison.py) | clinical | How sensitive are the reconstructed joint angles to the IK marker set (skin clusters only vs anatomical landmarks only vs both)? |
-| [`scapulothoracic_ellipsoid_calibration.py`](scapulothoracic_ellipsoid_calibration.py) | clinical | Calibrate, by bilevel optimisation, a thoracic ellipsoid on which the scapula glides (tangent ellipsoid-on-plane joint, Naaim 2016/2017), and compare its scapulothoracic angles to the free baseline. |
+| [`scapulothoracic_ellipsoid_calibration.py`](scapulothoracic_ellipsoid_calibration.py) | clinical | Calibrate a thoracic ellipsoid on which the scapula glides (Naaim 2016/2017) by solving one all-frames inverse kinematics whose shared variables include the ellipsoid semi-axes and centre; supports both the tangent (ELLIPSOID_ON_PLANE) and one-point (POINT_ON_ELLIPSOID) joints, and compares the scapulothoracic angles to the FREE baseline. |
 
-> `scapulothoracic_ellipsoid_calibration.py` runs a nested `scipy.optimize.least_squares` around
-> the differential IK, so it is markedly slower than the other scripts.
+> `scapulothoracic_ellipsoid_calibration.py` builds a single CasADi/IPOPT NLP over every
+> (subsampled) frame at once — the natural coordinates of all frames **and** the six ellipsoid
+> parameters `(a, b, c, cx, cy, cz)` are optimised together, with the rigid-body/joint constraints
+> enforced on each frame. The `KinematicCalibration` class in that file is distilled from bionc's
+> `InverseKinematics`. Because the whole trial is one NLP, it is the heaviest study; reduce
+> `STRIDE`/frame count if it is slow, and switch `ELLIPSOID_MODELS` to pick the joint(s) to calibrate.

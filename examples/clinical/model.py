@@ -203,7 +203,39 @@ def first_frame_guess(trc_filename: str, marker_set: str = "anatomical"):
     return model.Q_from_markers(markers)
 
 
-def build_ellipsoid_model(trc_filename: str, theta, marker_set: str = "both") -> BiomechanicalModel:
+def _add_thorax_ellipsoid_geometry(model: BiomechanicalModel, cx: float, cy: float, cz: float) -> None:
+    """
+    Attach the ellipsoid geometry to the thorax: its centre (at segment-frame ``(cx, cy, cz)``)
+    and its three principal axes (kept aligned with the thorax segment axes). Because they are
+    interpolated from ``Q_THORAX``, the ellipsoid moves rigidly with the thorax.
+    """
+    model["THORAX"].add_natural_marker_from_segment_coordinates(
+        name="ELLIPSOID_CENTER", location=np.array([cx, cy, cz]), is_technical=False, is_anatomical=True
+    )
+    for name, direction in zip(("AXIS_A", "AXIS_B", "AXIS_C"), ([1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0])):
+        model["THORAX"].add_natural_vector_from_segment_coordinates(name=name, direction=np.array(direction))
+
+
+def _add_scapula_landmark_centroid(model: BiomechanicalModel, name: str = "SCAP_CENTROID") -> None:
+    """
+    Add a scapula marker at the centroid of the three anatomical landmarks RSAA, RSIA, RSRS
+    (the AA / AI / TS of the ISB scapula), used as the contact point of the one-point ellipsoid
+    joint. Its natural position is the mean of the three landmarks' natural positions.
+    """
+    from bionc.bionc_numpy.natural_marker import NaturalMarker
+
+    scapula = model["RSCAPULA"]
+    landmark_positions = [
+        np.asarray(scapula.marker_from_name(landmark).position, dtype=float).reshape(3)
+        for landmark in ("RSAA", "RSIA", "RSRS")
+    ]
+    centroid = np.mean(landmark_positions, axis=0)
+    scapula.add_natural_marker(
+        NaturalMarker(name=name, parent_name="RSCAPULA", position=centroid, is_technical=False, is_anatomical=True)
+    )
+
+
+def build_ellipsoid_model(trc_filename: str, theta, marker_set: str = "anatomical") -> BiomechanicalModel:
     """
     Constrained model whose scapulothoracic FREE joint is replaced by a tangent
     ellipsoid-on-plane joint (Naaim 2016/2017): the scapula plane stays tangent to a thoracic
@@ -222,21 +254,17 @@ def build_ellipsoid_model(trc_filename: str, theta, marker_set: str = "both") ->
     """
     a, b, c, cx, cy, cz = theta
     model = build_model_constrained(trc_filename, marker_set=marker_set)
+    _add_thorax_ellipsoid_geometry(model, cx, cy, cz)
 
-    # Ellipsoid geometry carried by the thorax (centre + the three principal axes). Because they
-    # are interpolated from Q_THORAX, the ellipsoid moves rigidly with the thorax.
-    model["THORAX"].add_natural_marker_from_segment_coordinates(
-        name="ELLIPSOID_CENTER", location=np.array([cx, cy, cz]), is_technical=False, is_anatomical=True
+    # Scapula plane: the contact point is the centroid of the three anatomical landmarks
+    # (RSAA/RSIA/RSRS), which lies on the scapula plane. The plane normal is the scapula u-axis
+    # (= normal_to(RSAA, RSIA, RSRS)); the natural direction [-1, 0, 0] makes it point POSTERIORLY
+    # (away from the thorax), so the tangent ellipsoid centre sits anterior to the scapula (inside
+    # the thorax) instead of behind it.
+    _add_scapula_landmark_centroid(model, name="SCAP_CONTACT")
+    model["RSCAPULA"].add_natural_vector_from_segment_coordinates(
+        name="SCAP_NORMAL", direction=np.array([-1.0, 0.0, 0.0])
     )
-    for name, direction in zip(("AXIS_A", "AXIS_B", "AXIS_C"), ([1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0])):
-        model["THORAX"].add_natural_vector_from_segment_coordinates(name=name, direction=np.array(direction))
-
-    # Scapula plane: its normal is the scapula u-axis, which is normal_to(RSAA, RSIA, RSRS) by the
-    # segment definition, so the natural direction [1, 0, 0] gives exactly that plane normal.
-    model["RSCAPULA"].add_natural_marker_from_segment_coordinates(
-        name="SCAP_CONTACT", location=np.zeros(3), is_technical=False, is_anatomical=True
-    )
-    model["RSCAPULA"].add_natural_vector_from_segment_coordinates(name="SCAP_NORMAL", direction=np.array([1.0, 0.0, 0.0]))
 
     # Swap the FREE joint for the tangent ellipsoid joint, keeping the same Euler bases so the
     # reported scapulothoracic angles stay comparable to the FREE baseline.
@@ -254,7 +282,40 @@ def build_ellipsoid_model(trc_filename: str, theta, marker_set: str = "both") ->
             ellipsoid_axis_c="AXIS_C",
             plane_point="SCAP_CONTACT",
             plane_normal="SCAP_NORMAL",
-            projection_basis=EulerSequence.XYZ,
+            projection_basis=EulerSequence.YXZ,  # match the FREE scapulothoracic basis so angles are comparable
+            child_basis=TransformationMatrixType.Bvu,
+        )
+    )
+    return model
+
+
+def build_point_on_ellipsoid_model(trc_filename: str, theta, marker_set: str = "both") -> BiomechanicalModel:
+    """
+    Constrained model whose scapulothoracic FREE joint is replaced by a one-point
+    ellipsoid joint: a single scapula point (the centroid of the RSAA/RSIA/RSRS landmarks)
+    is constrained to lie on the thoracic ellipsoid (1 holonomic constraint).
+
+    Same ``theta = (a, b, c, cx, cy, cz)`` convention as :func:`build_ellipsoid_model`.
+    """
+    a, b, c, cx, cy, cz = theta
+    model = build_model_constrained(trc_filename, marker_set=marker_set)
+    _add_thorax_ellipsoid_geometry(model, cx, cy, cz)
+    _add_scapula_landmark_centroid(model, name="SCAP_CENTROID")
+
+    model.remove_joint("Scapulothoracic")
+    model._add_joint(
+        dict(
+            name="Scapulothoracic",
+            joint_type=JointType.POINT_ON_ELLIPSOID,
+            parent="THORAX",
+            child="RSCAPULA",
+            semi_axis_lengths=(a, b, c),
+            ellipsoid_center="ELLIPSOID_CENTER",
+            ellipsoid_axis_a="AXIS_A",
+            ellipsoid_axis_b="AXIS_B",
+            ellipsoid_axis_c="AXIS_C",
+            contact_point="SCAP_CENTROID",
+            projection_basis=EulerSequence.YXZ,  # match the FREE scapulothoracic basis so angles are comparable
             child_basis=TransformationMatrixType.Bvu,
         )
     )

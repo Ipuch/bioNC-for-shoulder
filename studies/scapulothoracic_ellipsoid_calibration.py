@@ -39,11 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root on the
 import matplotlib.pyplot as plt
 import numpy as np
 
-from bionc import NaturalCoordinates as NaturalCoordinatesNumpy
-from bionc import SegmentNaturalCoordinates as SegmentNaturalCoordinatesNumpy
-from bionc import TransformationMatrixType
-
 from examples._shared.ik import load_markers, marker_rmse_mm, run_ik
+from examples._shared.viz import named_bionc_model, overlay_ellipsoids
 from examples.clinical.model import (
     build_ellipsoid_model,
     build_model_free,
@@ -51,7 +48,14 @@ from examples.clinical.model import (
     build_point_on_ellipsoid_model,
     first_frame_guess,
 )
-from kinematic_calibration import KinematicCalibration, scapulothoracic_angles
+from kinematic_calibration import EllipsoidSemiAxes, KinematicCalibration, MarkerPosition, scapulothoracic_angles
+from shoulder_calibration import (
+    PARAMETER_PRIOR,
+    contact_point_cloud,
+    ellipsoid_bounds,
+    fit_ellipsoid,
+    thorax_reference,
+)
 
 DATA = str(Path(__file__).resolve().parents[1] / "examples" / "data" / "testFlorent_clinicalData.c3d")
 STRIDE = 5 # frame subsampling: the whole (subsampled) trial is solved together in one NLP
@@ -66,53 +70,17 @@ def warm_start_theta(model, markers: np.ndarray) -> tuple:
     """
     Data-driven initial ellipsoid ``(a, b, c, cx, cy, cz)`` in thorax segment coordinates.
 
-    Semi-axes ``(a, b, c)``: the mean thorax-origin-to-scapula-origin distance (so the scapula
-    starts near the surface).
-
-    Centre, in the thorax segment frame (X = antero-posterior, Y = vertical, Z = medio-lateral):
-        * cx = 0                on the mid-sagittal plane (antero-posterior);
-        * cy = vertical midpoint of C7 (``CV7``) and the bottom thoracic vertebra (``TV8``);
-        * cz = medio-lateral midpoint of the acromioclavicular joint (``RCAJ``, "AC") and the thorax
-               origin -> half-way out toward the shoulder; using the AC marker makes the sign follow
-               the recorded side (right vs left) automatically.
-
-    Landmark positions are expressed in the thorax frame with the ``Buv`` transform ``B`` via
-    ``L = B @ inv([u, v, w]) @ (P - rp_thorax)`` -- the exact inverse of the segment-coordinate
-    convention used by ``add_natural_marker_from_segment_coordinates``.
+    Express the scapula contact point in the thorax frame over the whole trial, then fit an
+    ellipsoid to that cloud with :func:`~studies.shoulder_calibration.fit_ellipsoid`, sized against
+    the subject's own thorax. See that module for why the fit needs a prior at all: the scapula
+    sweeps too small a patch for its curvature to pin down a radius.
     """
-    Q = np.asarray(model.Q_from_markers(markers))
-    thorax = model.segments["THORAX"]
-    idx_thorax = thorax.index
-    idx_scapula = model.segments["RSCAPULA"].index
-    B = np.asarray(thorax.compute_transformation_matrix(TransformationMatrixType.Buv), dtype=float)
+    cloud = contact_point_cloud(model, markers)
+    reference = thorax_reference(model, markers)
+    fit = fit_ellipsoid(cloud, reference, bounds=ellipsoid_bounds(reference))
+    print(f"warm start surface RMS = {fit['residual_mm']:.2f} mm, at bounds: {fit['at_bounds'] or 'none'}")
+    return (*fit["semi_axes"], *fit["center"])
 
-    names = list(model.marker_names_technical)
-    i_ac, i_c7, i_t8 = names.index("RCAJ"), names.index("CV7"), names.index("TV8")
-
-    def to_thorax_frame(point_global, rp_thorax, uvw):
-        return B @ np.linalg.inv(uvw) @ (point_global - rp_thorax)
-
-    distances, ac_z, c7_y, t8_y = [], [], [], []
-    for k in range(Q.shape[1]):
-        Q_k = NaturalCoordinatesNumpy(Q[:, k])
-        Qt = SegmentNaturalCoordinatesNumpy(Q_k.vector(idx_thorax))
-        rp_thorax = np.asarray(Qt.rp, dtype=float).reshape(3)
-        uvw = np.column_stack(
-            [np.asarray(Qt.u).reshape(3), np.asarray(Qt.v).reshape(3), np.asarray(Qt.w).reshape(3)]
-        )
-        rp_scapula = np.asarray(SegmentNaturalCoordinatesNumpy(Q_k.vector(idx_scapula)).rp, dtype=float).reshape(3)
-
-        distances.append(float(np.linalg.norm(rp_scapula - rp_thorax)))
-        ac_z.append(to_thorax_frame(markers[:3, i_ac, k], rp_thorax, uvw)[2])  # medio-lateral
-        c7_y.append(to_thorax_frame(markers[:3, i_c7, k], rp_thorax, uvw)[1])  # vertical
-        t8_y.append(to_thorax_frame(markers[:3, i_t8, k], rp_thorax, uvw)[1])  # vertical
-
-    radius = float(np.mean(distances))
-    cx = 0.0
-    cy = float((np.mean(c7_y) + np.mean(t8_y)) / 2)  # vertical midpoint C7 / T8
-    cz = float(np.mean(ac_z) / 2)  # medio-lateral midpoint AC / thorax origin (origin_z = 0)
-    # return (radius, radius, radius, cx, cy, cz)
-    return (0.082997500000000002, 0.199991, 0.083001000000000005, cx, cy, cz)
 
 def run_free_baseline():
     """FREE-scapulothoracic baseline IK (frame per frame). Returns ``(model, Qopt)``."""
@@ -137,124 +105,38 @@ def calibrate(ellipsoid_model: str, base_model, markers: np.ndarray, marker_set:
     theta0 = warm_start_theta(base_model, markers)
     print(f"[{ellipsoid_model}] warm start theta0 = {np.array2string(np.array(theta0), precision=4)}")
 
+    reference = thorax_reference(base_model, markers)
+    bounds = ellipsoid_bounds(reference)
     model = ELLIPSOID_BUILDERS[ellipsoid_model](DATA, theta0, marker_set=marker_set)
-    calibration = KinematicCalibration(model, markers, active_direct_frame_constraints=True)
+    calibration = KinematicCalibration(
+        model,
+        markers,
+        parameters=[
+            EllipsoidSemiAxes("Scapulothoracic", bounds=bounds["semi_axes"], prior=1.0),
+            MarkerPosition(
+                "THORAX",
+                "ELLIPSOID_CENTER",
+                targets=(("Scapulothoracic", "ellipsoid_center"),),
+                half_range=bounds["center_half_range"],
+                box_center=reference["center"],
+                prior=1.0,
+            ),
+        ],
+        active_direct_frame_constraints=True,
+        # without it the semi-axes ride their bounds: a contact patch does not determine a radius
+        regularization=PARAMETER_PRIOR * markers.shape[2],
+    )
     Qopt = calibration.solve()
     out = calibration.sol()
 
     print(f"[{ellipsoid_model}] success={out['success']}")
-    print(f"[{ellipsoid_model}] semi-axes [m]      = {np.array2string(out['semi_axes'], precision=4)}")
-    print(f"[{ellipsoid_model}] centre (natural)   = {np.array2string(out['ellipsoid_center_natural'], precision=4)}")
+    print(f"[{ellipsoid_model}] semi-axes [mm]     = {np.array2string(out['semi_axes'] * 1000, precision=1)}")
+    print(f"[{ellipsoid_model}] centre (segment mm)= {np.array2string(out['ellipsoid_center_scs'] * 1000, precision=1)}")
     print(f"[{ellipsoid_model}] marker RMSE        = {out['marker_rmse_mm']:.2f} mm")
     print(f"[{ellipsoid_model}] max joint residual = {np.max(out['max_joint_residual_per_frame']):.3e}")
+    print(f"[{ellipsoid_model}] parameters at bounds = {out['parameters_at_bounds'] or 'none'}")
     return dict(model=model, Qopt=Qopt, out=out)
 
-
-def _rotation_to_xyzw(rotation: np.ndarray) -> list:
-    """3x3 rotation matrix -> quaternion [x, y, z, w] (Shepperd's method)."""
-    m = rotation
-    trace = m[0, 0] + m[1, 1] + m[2, 2]
-    if trace > 0:
-        s = np.sqrt(trace + 1.0) * 2
-        x, y, z, w = (m[2, 1] - m[1, 2]) / s, (m[0, 2] - m[2, 0]) / s, (m[1, 0] - m[0, 1]) / s, 0.25 * s
-    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
-        s = np.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2
-        x, y, z, w = 0.25 * s, (m[0, 1] + m[1, 0]) / s, (m[0, 2] + m[2, 0]) / s, (m[2, 1] - m[1, 2]) / s
-    elif m[1, 1] > m[2, 2]:
-        s = np.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2
-        x, y, z, w = (m[0, 1] + m[1, 0]) / s, 0.25 * s, (m[1, 2] + m[2, 1]) / s, (m[0, 2] - m[2, 0]) / s
-    else:
-        s = np.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2
-        x, y, z, w = (m[0, 2] + m[2, 0]) / s, (m[1, 2] + m[2, 1]) / s, 0.25 * s, (m[1, 0] - m[0, 1]) / s
-    q = np.array([x, y, z, w])
-    return (q / np.linalg.norm(q)).tolist()
-
-
-def _axes_to_xyzw(axes: np.ndarray) -> list:
-    """Nearest rotation (SVD) to the (possibly slightly non-orthogonal) axis columns, as xyzw."""
-    u, _, vt = np.linalg.svd(axes)
-    rotation = u @ vt
-    if np.linalg.det(rotation) < 0:
-        u = u.copy()
-        u[:, -1] *= -1
-        rotation = u @ vt
-    return _rotation_to_xyzw(rotation)
-
-
-def _plane_triangle(center: np.ndarray, normal: np.ndarray, size: float = 0.12) -> list:
-    """Three vertices of an equilateral triangle centred on ``center``, lying in the plane ``normal``."""
-    n = normal / np.linalg.norm(normal)
-    helper = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-    e1 = np.cross(n, helper)
-    e1 /= np.linalg.norm(e1)
-    e2 = np.cross(n, e1)
-    return [
-        (center + size * e1).tolist(),
-        (center + size * (-0.5 * e1 + 0.8660254 * e2)).tolist(),
-        (center + size * (-0.5 * e1 - 0.8660254 * e2)).tolist(),
-    ]
-
-
-def _overlay_ellipsoids(ellipsoids, t_span: np.ndarray) -> None:
-    """
-    Log each calibrated ellipsoid, its scapula contact point, and (for the tangent joint) the
-    scapula plane, moving with the segments on the pyorerun ``stable_time`` timeline. The ellipsoid
-    rides on the thorax; the contact point and plane ride on the scapula.
-    """
-    import rerun as rr
-
-    from bionc.bionc_numpy.natural_vector import NaturalVector
-
-    for entity, model, Qopt, theta, color in ellipsoids:
-        solid_color = (color[0], color[1], color[2], 255)  # opaque marker vs translucent surfaces
-
-        radii = np.asarray(theta[:3], dtype=float)
-        center_interp = np.asarray(NaturalVector(np.asarray(theta[3:6], dtype=float)).interpolate(), dtype=float)
-        joint = model.joints["Scapulothoracic"]
-        axes_interp = [np.asarray(axis.interpolation_matrix, dtype=float) for axis in joint.ellipsoid_axes]
-        thorax_slice = slice(12 * model.segments["THORAX"].index, 12 * model.segments["THORAX"].index + 12)
-        scapula_slice = slice(12 * model.segments["RSCAPULA"].index, 12 * model.segments["RSCAPULA"].index + 12)
-
-        # the tangent joint carries a plane (point + normal); the one-point joint only a contact point
-        plane_point = getattr(joint, "plane_point", None)
-        if plane_point is not None:
-            contact_interp = np.asarray(plane_point.interpolation_matrix, dtype=float)
-            normal_interp = np.asarray(joint.plane_normal.interpolation_matrix, dtype=float)
-        else:
-            contact_interp = np.asarray(joint.contact_point.interpolation_matrix, dtype=float)
-            normal_interp = None
-
-        for k, t in enumerate(t_span):
-            q_thorax = np.asarray(Qopt[thorax_slice, k], dtype=float).reshape(-1)
-            q_scapula = np.asarray(Qopt[scapula_slice, k], dtype=float).reshape(-1)
-            rr.set_time("stable_time", duration=float(t))
-
-            center = center_interp @ q_thorax
-            axes = np.column_stack([interp @ q_thorax for interp in axes_interp])
-            axes /= np.linalg.norm(axes, axis=0, keepdims=True)
-            rr.log(
-                entity,
-                rr.Ellipsoids3D(
-                    half_sizes=[radii.tolist()],
-                    centers=[center.tolist()],
-                    quaternions=[rr.Quaternion(xyzw=_axes_to_xyzw(axes))],
-                    colors=[color],
-                    fill_mode="MajorWireframe",
-                ),
-            )
-
-            contact = contact_interp @ q_scapula
-            rr.log(f"{entity}/contact_point", rr.Points3D([contact.tolist()], colors=[solid_color], radii=[0.01]))
-
-            if normal_interp is not None:
-                rr.log(
-                    f"{entity}/plane",
-                    rr.Mesh3D(
-                        vertex_positions=_plane_triangle(contact, normal_interp @ q_scapula),
-                        triangle_indices=[[0, 1, 2]],
-                        vertex_colors=[color, color, color],
-                    ),
-                )
 
 
 def visualize(named_models: dict, markers: np.ndarray, marker_names, ellipsoids=()) -> None:
@@ -263,24 +145,12 @@ def visualize(named_models: dict, markers: np.ndarray, marker_names, ellipsoids=
     on the same experimental markers, plus the calibrated ellipsoid trajectories. Each model gets
     a distinct name so rerun shows them as separate, individually toggleable entities.
     """
-    from bionc.vizualization.pyorerun_interface import BioncModelNoMesh
     from pyorerun import PhaseRerun, PyoMarkers
-
-    class _NamedBioncModel(BioncModelNoMesh):
-        """BioncModelNoMesh with a per-instance name (the base class hard-codes a single name)."""
-
-        def __init__(self, model, display_name, options=None):
-            super().__init__(model, options)
-            self._display_name = display_name
-
-        @property
-        def name(self):
-            return self._display_name
 
     t_span = np.linspace(0, 1, markers.shape[2])
     prr = PhaseRerun(t_span=t_span)
     for display_name, (model, Q) in named_models.items():
-        prr.add_animated_model(_NamedBioncModel(model, display_name), np.asarray(Q))
+        prr.add_animated_model(named_bionc_model(model, display_name), np.asarray(Q))
 
     pyomarkers = PyoMarkers(data=markers, marker_names=list(marker_names))
     pyomarkers.show_labels = False
@@ -288,7 +158,7 @@ def visualize(named_models: dict, markers: np.ndarray, marker_names, ellipsoids=
     prr.rerun()
 
     # rerun recording is now live -> overlay the calibrated ellipsoids on the same timeline
-    _overlay_ellipsoids(ellipsoids, t_span)
+    overlay_ellipsoids(ellipsoids, t_span)
 
 
 def plot_residuals(results: dict, baseline_marker_rmse: np.ndarray, time: np.ndarray) -> None:
@@ -375,7 +245,8 @@ def main():
                 f"scapulothoracic_ellipsoid/{model}",
                 results[model]["model"],
                 results[model]["Qopt"],
-                results[model]["out"]["theta"],
+                results[model]["out"]["semi_axes"],
+                results[model]["out"]["ellipsoid_center_natural"],
                 ELLIPSOID_RGBA[model],
             )
         )

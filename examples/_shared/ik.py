@@ -6,6 +6,7 @@ coordinates into joint (Euler) angles, the marker RMSE, and a generic joint-angl
 that labels each axis from the joint's own Euler sequence.
 """
 
+import ezc3d
 import matplotlib.pyplot as plt
 import numpy as np
 from pyomeca import Markers
@@ -13,12 +14,26 @@ from pyomeca import Markers
 from bionc import InverseKinematics, NaturalCoordinates
 
 
+def c3d_length_factor(c3d_filename: str) -> float:
+    """
+    Divisor turning this c3d's POINT units into metres: 1000 for millimetres, 1 for metres.
+
+    Mirrors ``bionc.model_creation.c3d_data.C3dData._to_meter``, which is what builds the model
+    geometry. Both must agree: some files of the same study are stored in mm (``testFlorent_*.c3d``)
+    and others in m (the ``99007140-*`` dataset), and assuming mm on a metre file makes the tracked
+    markers 1000x too small -- a ~125 mm marker RMSE instead of ~3 mm.
+    """
+    units = ezc3d.c3d(c3d_filename)["parameters"]["POINT"]["UNITS"]["value"]
+    return 1000.0 if len(units) > 0 and units[0] in ("mm", "millimeter") else 1.0
+
+
 def load_markers(model, c3d_filename: str, stride: int = 1) -> np.ndarray:
     """
     Technical markers of ``model`` as a ``(3 x nb_technical_markers x nb_frames)`` array in
     metres. Suitable both as IK input and as ``model.Q_from_markers`` input.
     """
-    return Markers.from_c3d(c3d_filename, usecols=model.marker_names_technical).to_numpy()[:3, :, ::stride] / 1000
+    markers = Markers.from_c3d(c3d_filename, usecols=model.marker_names_technical).to_numpy()
+    return markers[:3, :, ::stride] / c3d_length_factor(c3d_filename)
 
 
 def run_ik(model, c3d_filename: str, *, method: str = "dik", stride: int = 1, **solve_kwargs):

@@ -21,6 +21,25 @@ use different marker conventions. Treat them as two separate examples of the sam
 | [`henninger/`](henninger/) | `data/testFlorent_HenningerData.c3d` | `IJ, C7, PX, T5` (thorax), `AA, TS, IA, AC, GSC` (scapula), `GSChum, EL, EM` (humerus) |
 | [`clinical/`](clinical/) | `data/testFlorent_clinicalData.c3d` | `SJN, CV7, SXS, TV8` (thorax), `RSAA, RSIA, RSRS, RCAJ` + `Cluster_RS_*` (scapula), `RGJC, RHME, RHLE` + `Cluster_RA_*` (humerus) |
 
+### A third dataset: a whole session
+
+`data/99007140-40.19107308-20260825/` holds **8 trials** of one subject (4 `ANALYTIC`, 4
+`FUNCTIONAL`, 100 Hz, 25 312 frames in total, no gaps on the markers the model tracks). It uses the
+same marker convention as `clinical/`, so `clinical/model.py` builds it directly — the difference is
+that the calibration studies in [`studies/`](../studies/) pool **all 8 trials at once** through
+`_shared/c3d_data.py`.
+
+Two things to know about these files:
+
+* **they are stored in metres**, while `testFlorent_*.c3d` are in millimetres. `load_markers` reads
+  `POINT:UNITS` per file (`c3d_length_factor`), matching what bionc's `C3dData` does when it builds
+  the model. Assuming millimetres on a metre file silently gives a ~125 mm marker RMSE instead of
+  ~3 mm.
+* the `ANALYTIC` trials carry six extra channels — `RHT`, `RGH`, `RST` and their left counterparts.
+  These are **not points**: `POINT:TYPE_GROUPS = ['ANGLES']` marks them as the acquisition
+  software's humerothoracic, glenohumeral and scapulothoracic Euler angles in degrees. A useful
+  independent reference to compare reconstructed angles against.
+
 ## The three steps (per dataset)
 
 1. **`01_build_model_no_constraints.py`** — build the model with **every joint FREE**. The
@@ -37,9 +56,11 @@ use different marker conventions. Treat them as two separate examples of the sam
 
 ## How the code is organised (minimal duplication)
 
-- **`_shared/`** holds everything that is not dataset-specific: the thorax frame helper
-  (`frames.py`), the IK / joint-angle / RMSE / plotting helpers (`ik.py`) and the pyorerun
-  animation boilerplate (`viz.py`). Written once, imported everywhere.
+- **`_shared/`** holds everything that is not dataset-specific: the frame helpers (`frames.py` —
+  thorax axis construction, and the natural ↔ segment-coordinate conversions the calibrations rely
+  on), the IK / joint-angle / RMSE / plotting helpers (`ik.py`), pooling several trials into one
+  dataset (`c3d_data.py`), and the pyorerun animation boilerplate (`viz.py`). Written once,
+  imported everywhere.
 - Each dataset folder has a single **`model.py`** that defines its segments once and selects the
   joints by keyword (`build_model_free`, `build_model_constrained`, …). The numbered scripts are
   thin: they just call a builder and a shared helper.

@@ -81,9 +81,14 @@ python examples/henninger/03_inverse_kinematics.py
 ```
 
 Deeper analyses (comparing joint constraints, marker sets, calibrating a scapulothoracic
-ellipsoid) live in [studies/](studies/) — see [studies/README.md](studies/README.md).
+ellipsoid, calibrating a whole kinematic chain from a session and cross-validating it) live in
+[studies/](studies/) — see [studies/README.md](studies/README.md).
 
 Some scripts open visualisation windows, so run them from a graphical session.
+
+> `bionc` is not installed into the conda environment on this machine; it resolves through the
+> sibling source tree. Either run with `PYTHONPATH=$HOME/ProjetsPython/bioNC`, or once and for all:
+> `conda activate bionc && pip install -e ../bioNC`.
 
 ## Why source installation
 

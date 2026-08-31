@@ -3,6 +3,69 @@
 import numpy as np
 
 
+def segment_transformation_matrix(model, segment_name: str) -> np.ndarray:
+    """
+    The map ``M`` from *natural* to orthonormal *segment* coordinates: ``p_scs = M @ p_nat``.
+
+    The columns of ``M`` are the natural basis vectors ``(u, rp - rd, w)`` written in the orthonormal
+    segment frame, so ``M.T @ M`` is the Gram matrix of that basis and ``M`` preserves lengths and
+    angles between the two descriptions.
+
+    Note the transpose. ``NaturalSegment.compute_transformation_matrix()`` returns ``M.T``, and
+    bionc's own ``add_natural_marker_from_segment_coordinates`` /
+    ``add_natural_vector_from_segment_coordinates`` then convert with ``inv(M.T)`` where they need
+    ``inv(M)``. For a marker that error is a few millimetres; for the ellipsoid axes it is
+    structural -- it turns the principal triad into a skewed one (axis norms 0.93 / 1.31 / 1.00 and
+    mutual dot products up to 0.56 on this subject) so the "semi-axis lengths" stop being geometric
+    semi-axes. Use :func:`add_vector_from_scs` and :func:`add_marker_from_scs` below rather than the
+    bionc helpers wherever the geometry has to be exact.
+    """
+    from bionc import TransformationMatrixType
+
+    return np.asarray(
+        model.segments[segment_name].compute_transformation_matrix(TransformationMatrixType.Buv), dtype=float
+    ).T
+
+
+def natural_to_scs(model, segment_name: str, position_natural) -> np.ndarray:
+    """Natural segment coordinates -> orthonormal segment coordinates [m]."""
+    M = segment_transformation_matrix(model, segment_name)
+    return M @ np.asarray(position_natural, dtype=float).reshape(3)
+
+
+def scs_to_natural(model, segment_name: str, position_scs) -> np.ndarray:
+    """Orthonormal segment coordinates [m] -> natural segment coordinates."""
+    M = segment_transformation_matrix(model, segment_name)
+    return np.linalg.solve(M, np.asarray(position_scs, dtype=float).reshape(3))
+
+
+def add_marker_from_scs(model, segment_name: str, name: str, position_scs, **flags):
+    """Add a natural marker at a position given in orthonormal segment coordinates [m]."""
+    from bionc.bionc_numpy.natural_marker import NaturalMarker
+
+    model.segments[segment_name].add_natural_marker(
+        NaturalMarker(
+            name=name,
+            parent_name=segment_name,
+            position=scs_to_natural(model, segment_name, position_scs),
+            **{"is_technical": False, "is_anatomical": True, **flags},
+        )
+    )
+
+
+def add_vector_from_scs(model, segment_name: str, name: str, direction_scs):
+    """Add a natural vector for a direction given in orthonormal segment coordinates (normalised)."""
+    from bionc.bionc_numpy.natural_marker import SegmentNaturalVector
+
+    direction = np.asarray(direction_scs, dtype=float).reshape(3)
+    direction = direction / np.linalg.norm(direction)
+    model.segments[segment_name].add_natural_vector(
+        SegmentNaturalVector(
+            name=name, parent_name=segment_name, direction=scs_to_natural(model, segment_name, direction)
+        )
+    )
+
+
 def u_thorax(ij: np.ndarray, centijc7: np.ndarray, centpxt8: np.ndarray) -> np.ndarray:
     """
     Postero-anterior axis ``u`` of the thorax segment.

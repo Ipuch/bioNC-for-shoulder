@@ -56,8 +56,8 @@ from studies.shoulder_calibration import (
 )
 
 DATA = str(Path(__file__).resolve().parents[1] / "examples" / "data" / "testFlorent_clinicalData.c3d")
-STRIDE = 5 # frame subsampling: the whole (subsampled) trial is solved together in one NLP
-ELLIPSOID_MODELS = ("tangent","point")  # extend to ("tangent", "point") to also calibrate the one-point joint
+STRIDE = 5  # frame subsampling: the whole (subsampled) trial is solved together in one NLP
+ELLIPSOID_MODELS = ("tangent", "point")  # both ellipsoid joints are calibrated and compared
 ELLIPSOID_BUILDERS = {"tangent": build_ellipsoid_model, "point": build_point_on_ellipsoid_model}
 ELLIPSOID_LABELS = {"tangent": "tangent ellipsoid", "point": "one-point ellipsoid"}
 MODEL_COLORS = {"tangent": "tab:red", "point": "tab:purple"}
@@ -76,15 +76,18 @@ def warm_start_theta(model, markers: np.ndarray) -> tuple:
     cloud = contact_point_cloud(model, markers)
     reference = thorax_reference(model, markers)
     fit = fit_ellipsoid(cloud, reference, bounds=ellipsoid_bounds(reference))
-    print(f"warm start surface RMS = {fit['residual_mm']:.2f} mm, at bounds: {fit['at_bounds'] or 'none'}")
+    print(
+        f"warm start surface RMS = {fit['residual_mm']:.2f} mm "
+        f"(ridge pulling the semi-axes {fit['prior_pull_mm']:.1f} mm off the thorax scale), "
+        f"at bounds: {fit['at_bounds'] or 'none'}"
+    )
     return (*fit["semi_axes"], *fit["center"])
 
 
 def run_free_baseline():
-    """FREE-scapulothoracic baseline IK (frame per frame). Returns ``(model, Qopt)``."""
+    """FREE-scapulothoracic baseline IK (frame per frame). Returns ``(model, Qopt, ik)``."""
     from bionc.bionc_numpy.enums import InitialGuessModeType
 
-    # baseline = build_model_constrained(DATA, marker_set=MARKER_SET)
     baseline = build_model_free(DATA, marker_set=MARKER_SET)
     q_init = first_frame_guess(DATA, marker_set=MARKER_SET)
     ik, Qopt = run_ik(

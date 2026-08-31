@@ -49,6 +49,22 @@ def scapulothoracic_angles(model, Q: np.ndarray, joint_name: str = "Scapulothora
     return np.degrees(angles)
 
 
+def labels_at_bounds(values, lower, upper, labels, tolerance: float = 0.01) -> list[str]:
+    """
+    Names of the unknowns that ended within ``tolerance`` of a bound, relative to their box width.
+
+    A parameter riding a bound is not calibrated -- it is *constrained*, and the number it reports
+    means nothing. Every fit in this package reports this, so the test lives here once.
+
+    Unknowns whose box has been collapsed to a point (a rotation frozen at zero, say) are excluded:
+    they are trivially "at bounds" and saying so is noise, not a warning.
+    """
+    values, lower, upper = np.asarray(values), np.asarray(lower), np.asarray(upper)
+    width = np.maximum(upper - lower, 1e-12)
+    margin = np.minimum(values - lower, upper - values) / width
+    return [label for label, close, free in zip(labels, margin <= tolerance, width > 1e-6) if close and free]
+
+
 def rodrigues(rotation_vector: MX) -> MX:
     """Rotation matrix of an MX Rodrigues (axis-angle) vector, smooth and singularity-free at 0."""
     theta = (dot(rotation_vector, rotation_vector) + 1e-12) ** 0.5
@@ -432,7 +448,9 @@ class KinematicCalibration:
     @staticmethod
     def _default_options() -> dict:
         return {
-            "ipopt.hessian_approximation": "exact",  # exact Hessian, as requested
+            # The NLP is large but very sparse (frames couple only through the shared parameters),
+            # so the exact Hessian is affordable and converges in far fewer iterations than L-BFGS.
+            "ipopt.hessian_approximation": "exact",
             "ipopt.max_iter": 3000,
             "ipopt.tol": 1e-8,
             "ipopt.print_level": 5,
@@ -493,13 +511,10 @@ class KinematicCalibration:
 
     def parameters_at_bounds(self, tolerance: float = 0.01) -> list[str]:
         """
-        Labels of the parameters that ended within ``tolerance`` (relative to their box width) of a
-        bound. A parameter riding a bound is not calibrated -- it is *constrained*, and the number
-        it reports means nothing. Always check this before quoting a calibrated value.
+        Labels of the parameters that ended on a bound. Always check this before quoting a
+        calibrated value -- see :func:`labels_at_bounds`.
         """
-        width = np.maximum(self._p_ub - self._p_lb, 1e-12)
-        margin = np.minimum(self.theta - self._p_lb, self._p_ub - self.theta) / width
-        return [label for label, close in zip(self.parameter_labels, margin <= tolerance) if close]
+        return labels_at_bounds(self.theta, self._p_lb, self._p_ub, self.parameter_labels, tolerance)
 
     def sol(self) -> dict:
         """

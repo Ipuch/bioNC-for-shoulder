@@ -82,7 +82,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--trial", default="ANALYTIC4", help="trial to replay, e.g. ANALYTIC2")
     parser.add_argument("--fold", default=None, help="fold whose calibration to use (default: the one holding out --trial)")
-    parser.add_argument("--stride", type=int, default=1, help="frame stride for the replay (default 5)")
+    parser.add_argument("--stride", type=int, default=1, help="frame stride for the replay (default 1)")
     parser.add_argument("--compare-free", action="store_true", help="also show the all-FREE reconstruction")
     arguments = parser.parse_args()
 

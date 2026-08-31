@@ -53,6 +53,7 @@ from studies.kinematic_calibration import (
     JointLength,
     KinematicCalibration,
     MarkerPosition,
+    labels_at_bounds,
 )
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data" / "99007140-40.19107308-20260825"
@@ -217,9 +218,16 @@ def fit_ellipsoid(
     So the ellipsoid form is imposed from the start, the residual is the *radial surface distance*
     (metres, comparable across sizes), and the unknowns are boxed by :func:`ellipsoid_bounds`.
 
-    Returns ``{"semi_axes", "center", "rotation", "residual_mm", "at_bounds"}``: lengths in metres,
-    the centre in thorax segment coordinates, ``rotation`` a 3x3 whose columns are the principal
-    axes, and the names of the unknowns that ended on a bound.
+    Returns ``{"semi_axes", "center", "rotation", "residual_mm", "prior_pull_mm", "at_bounds"}``:
+    lengths in metres, the centre in thorax segment coordinates, ``rotation`` a 3x3 whose columns
+    are the principal axes, and the names of the unknowns that ended on a bound.
+
+    ``residual_mm`` is the RMS *surface* distance and nothing else. The ridge terms are part of the
+    minimised vector but not of that number: they are not distances, and with ``prior_scale`` of
+    order ``sqrt(prior * nb_points)`` they can outweigh the surface block entirely, which would
+    quietly inflate the one figure this study asks the reader to compare against a 5.1 mm noise
+    floor. How hard the ridge is pulling is reported separately as ``prior_pull_mm``, the RMS
+    deviation of the semi-axes from the subject's thorax scale.
     """
     bounds = bounds or ellipsoid_bounds(reference)
     semi_low, semi_high = bounds["semi_axes"]
@@ -245,16 +253,16 @@ def fit_ellipsoid(
     solution = least_squares(residual, start, bounds=(lower, upper))
     semi_axes, center, rotation_vector = solution.x[:3], solution.x[3:6], solution.x[6:]
 
-    width = np.maximum(upper - lower, 1e-12)
-    margin = np.minimum(solution.x - lower, upper - solution.x) / width
     labels = ["a", "b", "c", "cx", "cy", "cz", "rx", "ry", "rz"]
-    at_bounds = [label for label, close, free in zip(labels, margin <= 0.01, width > 1e-6) if close and free]
+    at_bounds = labels_at_bounds(solution.x, lower, upper, labels)
 
+    surface_mm = solution.fun[: cloud.shape[1]] * 1000  # the ridge block is deliberately excluded
     return dict(
         semi_axes=semi_axes,
         center=center,
         rotation=_rodrigues(rotation_vector),
-        residual_mm=float(np.sqrt(np.mean(residual(solution.x) ** 2)) * 1000),
+        residual_mm=float(np.sqrt(np.mean(surface_mm**2))),
+        prior_pull_mm=float(np.sqrt(np.mean((semi_axes - reference["scale"]) ** 2)) * 1000),
         at_bounds=at_bounds,
     )
 

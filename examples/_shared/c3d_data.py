@@ -46,7 +46,14 @@ class MultiC3dData:
         for trial in trials[1:]:
             shared &= set(trial.values)
 
-        self.values = {name: np.concatenate([trial.values[name] for trial in trials], axis=1) for name in shared}
+        # Iterate the first trial rather than the set: set order over strings varies between
+        # processes with PYTHONHASHSEED, and a calibration that documents itself as deterministic
+        # should not leave the key order of its own dataset to chance.
+        self.values = {
+            name: np.concatenate([trial.values[name] for trial in trials], axis=1)
+            for name in trials[0].values
+            if name in shared
+        }
 
     @property
     def nb_frames(self) -> int:

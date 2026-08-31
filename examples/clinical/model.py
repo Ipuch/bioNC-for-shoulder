@@ -8,9 +8,18 @@ plus two clinical specificities:
 * :func:`build_ellipsoid_model` replaces the free scapulothoracic joint by a tangent
   ellipsoid-on-plane joint (Naaim 2016/2017), used by the calibration study.
 
+Every builder takes a ``source`` that is either a c3d path or any ``bionc`` ``Data`` object -- pass
+an :class:`~examples._shared.c3d_data.MultiC3dData` to calibrate the segment geometry and the
+data-driven joint lengths over a whole session instead of a single trial.
+
 Joint chain (proximal -> distal):
     GROUND --Freeflyer--> THORAX --[Clavicle]--> / --Scapulothoracic--> RSCAPULA --Glenohumeral--> RHUMERUS
+
+``include_humerus=False`` stops the chain at the scapula, for the thorax-and-scapula-only model the
+scapulothoracic ellipsoid is calibrated on.
 """
+
+from pathlib import Path
 
 import numpy as np
 
@@ -28,15 +37,28 @@ from bionc import (
     C3dData,
 )
 
-from examples._shared.frames import u_thorax
+from examples._shared.frames import (
+    add_marker_from_scs,
+    add_vector_from_scs,
+    natural_to_scs,
+    scs_to_natural,
+    u_thorax,
+)
 from examples._shared.ik import load_markers
 
 MARKER_SETS = ("cluster", "anatomical", "both")
 GLENOHUMERAL_CONSTRAINTS = ("free", "spherical")
+ELLIPSOID_JOINTS = ("tangent", "point")
+
+# dedicated, calibratable glenohumeral centres (see add_glenohumeral_centres)
+GH_GLENOID = "GH_GLENOID"
+GH_HEAD = "GH_HEAD"
 
 
-def _build_segments(model: BiomechanicalModelTemplate, *, use_cluster: bool, use_anatomical: bool) -> None:
-    """Add the THORAX, RSCAPULA and RHUMERUS segments and their markers (clinical names)."""
+def _build_segments(
+    model: BiomechanicalModelTemplate, *, use_cluster: bool, use_anatomical: bool, include_humerus: bool = True
+) -> None:
+    """Add the THORAX, RSCAPULA and (optionally) RHUMERUS segments and their markers (clinical names)."""
     u_axis_thorax = lambda m, bio: u_thorax(m["SJN"], m["CV7"], m["TV8"])
 
     model["THORAX"] = SegmentTemplate(
@@ -70,6 +92,9 @@ def _build_segments(model: BiomechanicalModelTemplate, *, use_cluster: bool, use
     model["RSCAPULA"].add_marker(MarkerTemplate(name="Cluster_RS_02", parent_name="RSCAPULA", is_technical=use_cluster))
     model["RSCAPULA"].add_marker(MarkerTemplate(name="Cluster_RS_03", parent_name="RSCAPULA", is_technical=use_cluster))
     model["RSCAPULA"].add_marker(MarkerTemplate(name="RGJC", parent_name="RSCAPULA", is_technical=use_anatomical))
+
+    if not include_humerus:
+        return
 
     model["RHUMERUS"] = SegmentTemplate(
         natural_segment=NaturalSegmentTemplate(
@@ -108,12 +133,20 @@ def _add_glenohumeral_joint(model: BiomechanicalModelTemplate, glenohumeral: str
         model.add_joint(joint_type=JointType.SPHERICAL, parent_point="RGJC", child_point="RGJC", **common)
 
 
+def _as_data(source, first_frame: int, last_frame: int):
+    """A c3d path becomes a :class:`~bionc.C3dData`; any ``Data`` object is passed through."""
+    if isinstance(source, (str, Path)):
+        return C3dData(str(source), first_frame=first_frame, last_frame=last_frame)
+    return source
+
+
 def build_model(
-    trc_filename: str,
+    source,
     *,
     marker_set: str = "both",
     clavicle_constraint: bool = False,
     glenohumeral: str = "free",
+    include_humerus: bool = True,
     first_frame: int = 0,
     last_frame: int = 200,
 ) -> BiomechanicalModel:
@@ -122,8 +155,9 @@ def build_model(
 
     Parameters
     ----------
-    trc_filename
-        c3d/trc file used to calibrate (update) the template.
+    source
+        c3d/trc file used to calibrate (update) the template, or a ``bionc`` ``Data`` object such as
+        :class:`~examples._shared.c3d_data.MultiC3dData` to calibrate over several pooled trials.
     marker_set
         Which scapula/humerus markers are technical (tracked by the IK): ``"cluster"``
         (skin cluster markers only), ``"anatomical"`` (bony landmarks only) or ``"both"``.
@@ -131,9 +165,12 @@ def build_model(
         If True, add a CONSTANT_LENGTH "clavicle" joint keeping RCAS (thorax) <-> RCAJ
         (scapula) constant. If False, the scapula is only held by the free scapulothoracic joint.
     glenohumeral
-        ``"free"`` or ``"spherical"`` (ball-and-socket at the shared RGJC point).
+        ``"free"`` or ``"spherical"`` (ball-and-socket at the shared RGJC point). Ignored when
+        ``include_humerus`` is False.
+    include_humerus
+        If False, stop the chain at the scapula: no RHUMERUS segment and no glenohumeral joint.
     first_frame, last_frame
-        Frame window used to calibrate the segment geometry.
+        Frame window used to calibrate the segment geometry. Only used when ``source`` is a path.
     """
     if marker_set not in MARKER_SETS:
         raise ValueError(f"marker_set must be one of {MARKER_SETS}, got {marker_set!r}")
@@ -141,7 +178,9 @@ def build_model(
     use_anatomical = marker_set in ("anatomical", "both")
 
     model = BiomechanicalModelTemplate()
-    _build_segments(model, use_cluster=use_cluster, use_anatomical=use_anatomical)
+    _build_segments(
+        model, use_cluster=use_cluster, use_anatomical=use_anatomical, include_humerus=include_humerus
+    )
 
     model.add_joint(
         name="Freeflyer",
@@ -174,20 +213,20 @@ def build_model(
         child_basis=TransformationMatrixType.Bvu,
     )
 
-    _add_glenohumeral_joint(model, glenohumeral)
+    if include_humerus:
+        _add_glenohumeral_joint(model, glenohumeral)
 
-    data = C3dData(f"{trc_filename}", first_frame=first_frame, last_frame=last_frame)
-    return model.update(data)
+    return model.update(_as_data(source, first_frame, last_frame))
 
 
-def build_model_free(trc_filename: str, marker_set: str = "both") -> BiomechanicalModel:
+def build_model_free(source, marker_set: str = "both", **kwargs) -> BiomechanicalModel:
     """Fully unconstrained model: every joint FREE (segments tied only by shared markers)."""
-    return build_model(trc_filename, marker_set=marker_set, clavicle_constraint=False, glenohumeral="free")
+    return build_model(source, marker_set=marker_set, clavicle_constraint=False, glenohumeral="free", **kwargs)
 
 
-def build_model_constrained(trc_filename: str, marker_set: str = "both") -> BiomechanicalModel:
+def build_model_constrained(source, marker_set: str = "both", **kwargs) -> BiomechanicalModel:
     """Constrained model: constant-length clavicle + spherical (ball-and-socket) glenohumeral."""
-    return build_model(trc_filename, marker_set=marker_set, clavicle_constraint=True, glenohumeral="spherical")
+    return build_model(source, marker_set=marker_set, clavicle_constraint=True, glenohumeral="spherical", **kwargs)
 
 
 def first_frame_guess(trc_filename: str, marker_set: str = "anatomical"):
@@ -203,17 +242,106 @@ def first_frame_guess(trc_filename: str, marker_set: str = "anatomical"):
     return model.Q_from_markers(markers)
 
 
-def _add_thorax_ellipsoid_geometry(model: BiomechanicalModel, cx: float, cy: float, cz: float) -> None:
+def _add_thorax_ellipsoid_geometry(
+    model: BiomechanicalModel, cx: float, cy: float, cz: float, rotation: np.ndarray = None
+) -> None:
     """
     Attach the ellipsoid geometry to the thorax: its centre (at segment-frame ``(cx, cy, cz)``)
-    and its three principal axes (kept aligned with the thorax segment axes). Because they are
-    interpolated from ``Q_THORAX``, the ellipsoid moves rigidly with the thorax.
+    and its three principal axes. Because they are interpolated from ``Q_THORAX``, the ellipsoid
+    moves rigidly with the thorax.
+
+    ``rotation`` is the 3x3 orientation of the ellipsoid in the thorax segment frame; its columns
+    become the principal axes. It defaults to the identity, i.e. axes aligned with the thorax
+    segment axes.
+
+    The geometry goes in through :func:`~examples._shared.frames.add_marker_from_scs` and
+    :func:`~examples._shared.frames.add_vector_from_scs` rather than bionc's
+    ``add_natural_*_from_segment_coordinates``, which convert with the transpose of the right matrix
+    -- see :func:`~examples._shared.frames.segment_transformation_matrix`. It matters here: only
+    with the correct conversion are the three principal axes orthonormal in the global frame, and
+    only then do ``(a, b, c)`` mean geometric semi-axes in metres.
     """
-    model["THORAX"].add_natural_marker_from_segment_coordinates(
-        name="ELLIPSOID_CENTER", location=np.array([cx, cy, cz]), is_technical=False, is_anatomical=True
+    add_marker_from_scs(model, "THORAX", "ELLIPSOID_CENTER", np.array([cx, cy, cz]))
+    rotation = np.eye(3) if rotation is None else np.asarray(rotation, dtype=float)
+    for index, name in enumerate(("AXIS_A", "AXIS_B", "AXIS_C")):
+        add_vector_from_scs(model, "THORAX", name, rotation[:, index])
+
+
+def add_glenohumeral_centres(model: BiomechanicalModel) -> BiomechanicalModel:
+    """
+    Give the spherical glenohumeral joint two *dedicated* centres that a calibration can move.
+
+    Out of the box the joint is built on the ``RGJC`` marker of each segment -- but ``RGJC`` is a
+    tracked technical marker, and the marker objective must keep pulling it toward its experimental
+    trajectory even while the joint centre is being calibrated elsewhere. So we add two
+    non-technical natural markers, ``GH_GLENOID`` on the scapula and ``GH_HEAD`` on the humerus,
+    initialised at the respective ``RGJC`` local positions, and rebuild the joint on those. The
+    tracked ``RGJC`` markers are left untouched.
+
+    Modifies ``model`` in place and returns it.
+    """
+    from bionc.bionc_numpy.natural_marker import NaturalMarker
+
+    for segment_name, centre_name in (("RSCAPULA", GH_GLENOID), ("RHUMERUS", GH_HEAD)):
+        segment = model.segments[segment_name]
+        position = np.asarray(segment.marker_from_name("RGJC").position, dtype=float).reshape(3)
+        segment.add_natural_marker(
+            NaturalMarker(
+                name=centre_name,
+                parent_name=segment_name,
+                position=position,
+                is_technical=False,
+                is_anatomical=True,
+            )
+        )
+
+    joint = model.joints["Glenohumeral"]
+    model.remove_joint("Glenohumeral")
+    model._add_joint(
+        dict(
+            name="Glenohumeral",
+            joint_type=JointType.SPHERICAL,
+            parent="RSCAPULA",
+            child="RHUMERUS",
+            parent_point=GH_GLENOID,
+            child_point=GH_HEAD,
+            projection_basis=joint.projection_basis,
+            parent_basis=joint.parent_basis,
+            child_basis=joint.child_basis,
+        )
     )
-    for name, direction in zip(("AXIS_A", "AXIS_B", "AXIS_C"), ([1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0])):
-        model["THORAX"].add_natural_vector_from_segment_coordinates(name=name, direction=np.array(direction))
+    return model
+
+
+def glenohumeral_centres(model: BiomechanicalModel) -> dict[str, np.ndarray]:
+    """The two glenohumeral centres in their own segment coordinate system [m]."""
+    return {
+        "glenoid": natural_to_scs(model, "RSCAPULA", model.segments["RSCAPULA"].marker_from_name(GH_GLENOID).position),
+        "head": natural_to_scs(model, "RHUMERUS", model.segments["RHUMERUS"].marker_from_name(GH_HEAD).position),
+    }
+
+
+def set_glenohumeral_centres(model: BiomechanicalModel, glenoid_scs=None, head_scs=None) -> BiomechanicalModel:
+    """
+    Write calibrated glenohumeral centres (segment coordinates [m]) back into ``model``, in place.
+
+    The marker is mutated rather than replaced: the joint keeps a reference to the very object held
+    by the segment (``Joint.Spherical.__init__`` does ``parent.marker_from_name(...)``), so updating
+    it in place keeps the constraint and the segment in sync. ``interpolation_matrix`` is derived
+    from ``position`` at construction, so both have to be refreshed.
+    """
+    from bionc.bionc_numpy.natural_vector import NaturalVector
+
+    for segment_name, centre_name, position_scs in (
+        ("RSCAPULA", GH_GLENOID, glenoid_scs),
+        ("RHUMERUS", GH_HEAD, head_scs),
+    ):
+        if position_scs is None:
+            continue
+        marker = model.segments[segment_name].marker_from_name(centre_name)
+        marker.position = NaturalVector(scs_to_natural(model, segment_name, position_scs))
+        marker.interpolation_matrix = marker.position.interpolate()
+    return model
 
 
 def _add_scapula_landmark_centroid(model: BiomechanicalModel, name: str = "SCAP_CENTROID") -> None:
@@ -235,88 +363,105 @@ def _add_scapula_landmark_centroid(model: BiomechanicalModel, name: str = "SCAP_
     )
 
 
-def build_ellipsoid_model(trc_filename: str, theta, marker_set: str = "anatomical") -> BiomechanicalModel:
+def build_scapulothoracic_ellipsoid_model(
+    source,
+    theta,
+    *,
+    joint: str = "tangent",
+    rotation: np.ndarray = None,
+    marker_set: str = "anatomical",
+    clavicle_constraint: bool = True,
+    glenohumeral: str = "spherical",
+    include_humerus: bool = True,
+    calibratable_gh_centres: bool = False,
+    **build_kwargs,
+) -> BiomechanicalModel:
     """
-    Constrained model whose scapulothoracic FREE joint is replaced by a tangent
-    ellipsoid-on-plane joint (Naaim 2016/2017): the scapula plane stays tangent to a thoracic
-    ellipsoid carried by the THORAX (1 holonomic constraint, no penetration by definition).
+    Model whose scapulothoracic FREE joint is replaced by an ellipsoid joint (Naaim 2016/2017).
+
+    Two variants of the joint are available:
+
+    * ``joint="tangent"`` (ELLIPSOID_ON_PLANE) -- the scapula plane stays tangent to a thoracic
+      ellipsoid carried by the THORAX (1 holonomic constraint, no penetration by definition);
+    * ``joint="point"`` (POINT_ON_ELLIPSOID) -- a single scapula point, the centroid of the
+      RSAA/RSIA/RSRS landmarks, lies on the ellipsoid (1 holonomic constraint).
 
     Parameters
     ----------
-    trc_filename
-        The c3d/trc file used to build and calibrate the model.
+    source
+        c3d/trc path or ``Data`` object used to build and calibrate the model.
     theta
-        The 6 ellipsoid parameters ``(a, b, c, cx, cy, cz)``: the three semi-axis lengths [m]
-        and the ellipsoid centre expressed in the THORAX segment coordinate system. The three
-        principal axes stay aligned with the thorax segment axes.
-    marker_set
-        Forwarded to :func:`build_model` (which markers are technical).
+        The 6 ellipsoid parameters ``(a, b, c, cx, cy, cz)``: the three semi-axis lengths [m] and
+        the ellipsoid centre in the THORAX segment coordinate system.
+    joint
+        ``"tangent"`` or ``"point"``, see above.
+    rotation
+        3x3 orientation of the ellipsoid in the thorax segment frame (columns = principal axes).
+        Defaults to the identity, i.e. axes aligned with the thorax segment axes.
+    marker_set, clavicle_constraint, glenohumeral, include_humerus, build_kwargs
+        Forwarded to :func:`build_model`. ``include_humerus=False`` with
+        ``clavicle_constraint=False`` gives the thorax-and-scapula-only model used to calibrate the
+        ellipsoid on its own.
+    calibratable_gh_centres
+        If True, rebuild the spherical glenohumeral joint on the dedicated ``GH_GLENOID`` /
+        ``GH_HEAD`` centres so a calibration can move them (see :func:`add_glenohumeral_centres`).
     """
+    if joint not in ELLIPSOID_JOINTS:
+        raise ValueError(f"joint must be one of {ELLIPSOID_JOINTS}, got {joint!r}")
+
     a, b, c, cx, cy, cz = theta
-    model = build_model_constrained(trc_filename, marker_set=marker_set)
-    _add_thorax_ellipsoid_geometry(model, cx, cy, cz)
+    model = build_model(
+        source,
+        marker_set=marker_set,
+        clavicle_constraint=clavicle_constraint,
+        glenohumeral=glenohumeral,
+        include_humerus=include_humerus,
+        **build_kwargs,
+    )
+    if calibratable_gh_centres:
+        add_glenohumeral_centres(model)
+    _add_thorax_ellipsoid_geometry(model, cx, cy, cz, rotation=rotation)
 
-    # Scapula plane: the contact point is the centroid of the three anatomical landmarks
-    # (RSAA/RSIA/RSRS), which lies on the scapula plane. The plane normal is the scapula u-axis
-    # (= normal_to(RSAA, RSIA, RSRS)); the natural direction [-1, 0, 0] makes it point POSTERIORLY
-    # (away from the thorax), so the tangent ellipsoid centre sits anterior to the scapula (inside
-    # the thorax) instead of behind it.
-    _add_scapula_landmark_centroid(model, name="SCAP_CONTACT")
-    model["RSCAPULA"].add_natural_vector_from_segment_coordinates(
-        name="SCAP_NORMAL", direction=np.array([-1.0, 0.0, 0.0])
+    ellipsoid = dict(
+        name="Scapulothoracic",
+        parent="THORAX",
+        child="RSCAPULA",
+        semi_axis_lengths=(a, b, c),
+        ellipsoid_center="ELLIPSOID_CENTER",
+        ellipsoid_axis_a="AXIS_A",
+        ellipsoid_axis_b="AXIS_B",
+        ellipsoid_axis_c="AXIS_C",
+        projection_basis=EulerSequence.YXZ,  # match the FREE scapulothoracic basis so angles are comparable
+        child_basis=TransformationMatrixType.Bvu,
     )
 
-    # Swap the FREE joint for the tangent ellipsoid joint, keeping the same Euler bases so the
-    # reported scapulothoracic angles stay comparable to the FREE baseline.
-    model.remove_joint("Scapulothoracic")
-    model._add_joint(
-        dict(
-            name="Scapulothoracic",
-            joint_type=JointType.ELLIPSOID_ON_PLANE,
-            parent="THORAX",
-            child="RSCAPULA",
-            semi_axis_lengths=(a, b, c),
-            ellipsoid_center="ELLIPSOID_CENTER",
-            ellipsoid_axis_a="AXIS_A",
-            ellipsoid_axis_b="AXIS_B",
-            ellipsoid_axis_c="AXIS_C",
-            plane_point="SCAP_CONTACT",
-            plane_normal="SCAP_NORMAL",
-            projection_basis=EulerSequence.YXZ,  # match the FREE scapulothoracic basis so angles are comparable
-            child_basis=TransformationMatrixType.Bvu,
+    if joint == "tangent":
+        # Scapula plane: the contact point is the centroid of the three anatomical landmarks
+        # (RSAA/RSIA/RSRS), which lies on the scapula plane. The plane normal is the scapula u-axis
+        # (= normal_to(RSAA, RSIA, RSRS)); the natural direction [-1, 0, 0] makes it point POSTERIORLY
+        # (away from the thorax), so the tangent ellipsoid centre sits anterior to the scapula (inside
+        # the thorax) instead of behind it.
+        _add_scapula_landmark_centroid(model, name="SCAP_CONTACT")
+        add_vector_from_scs(model, "RSCAPULA", "SCAP_NORMAL", np.array([-1.0, 0.0, 0.0]))
+        ellipsoid |= dict(
+            joint_type=JointType.ELLIPSOID_ON_PLANE, plane_point="SCAP_CONTACT", plane_normal="SCAP_NORMAL"
         )
-    )
+    else:
+        _add_scapula_landmark_centroid(model, name="SCAP_CENTROID")
+        ellipsoid |= dict(joint_type=JointType.POINT_ON_ELLIPSOID, contact_point="SCAP_CENTROID")
+
+    # Swap the FREE joint for the ellipsoid joint, keeping the same Euler bases so the reported
+    # scapulothoracic angles stay comparable to the FREE baseline.
+    model.remove_joint("Scapulothoracic")
+    model._add_joint(ellipsoid)
     return model
 
 
-def build_point_on_ellipsoid_model(trc_filename: str, theta, marker_set: str = "both") -> BiomechanicalModel:
-    """
-    Constrained model whose scapulothoracic FREE joint is replaced by a one-point
-    ellipsoid joint: a single scapula point (the centroid of the RSAA/RSIA/RSRS landmarks)
-    is constrained to lie on the thoracic ellipsoid (1 holonomic constraint).
+def build_ellipsoid_model(source, theta, marker_set: str = "anatomical", **kwargs) -> BiomechanicalModel:
+    """Tangent (ELLIPSOID_ON_PLANE) scapulothoracic model -- see :func:`build_scapulothoracic_ellipsoid_model`."""
+    return build_scapulothoracic_ellipsoid_model(source, theta, joint="tangent", marker_set=marker_set, **kwargs)
 
-    Same ``theta = (a, b, c, cx, cy, cz)`` convention as :func:`build_ellipsoid_model`.
-    """
-    a, b, c, cx, cy, cz = theta
-    model = build_model_constrained(trc_filename, marker_set=marker_set)
-    _add_thorax_ellipsoid_geometry(model, cx, cy, cz)
-    _add_scapula_landmark_centroid(model, name="SCAP_CENTROID")
 
-    model.remove_joint("Scapulothoracic")
-    model._add_joint(
-        dict(
-            name="Scapulothoracic",
-            joint_type=JointType.POINT_ON_ELLIPSOID,
-            parent="THORAX",
-            child="RSCAPULA",
-            semi_axis_lengths=(a, b, c),
-            ellipsoid_center="ELLIPSOID_CENTER",
-            ellipsoid_axis_a="AXIS_A",
-            ellipsoid_axis_b="AXIS_B",
-            ellipsoid_axis_c="AXIS_C",
-            contact_point="SCAP_CENTROID",
-            projection_basis=EulerSequence.YXZ,  # match the FREE scapulothoracic basis so angles are comparable
-            child_basis=TransformationMatrixType.Bvu,
-        )
-    )
-    return model
+def build_point_on_ellipsoid_model(source, theta, marker_set: str = "both", **kwargs) -> BiomechanicalModel:
+    """One-point (POINT_ON_ELLIPSOID) scapulothoracic model -- see :func:`build_scapulothoracic_ellipsoid_model`."""
+    return build_scapulothoracic_ellipsoid_model(source, theta, joint="point", marker_set=marker_set, **kwargs)

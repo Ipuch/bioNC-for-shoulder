@@ -36,7 +36,7 @@ from bionc.bionc_casadi.natural_marker import NaturalMarker, SegmentNaturalVecto
 from bionc.bionc_casadi.natural_vector import NaturalVector
 from bionc.utils.casadi_utils import sarrus
 
-from examples._shared.frames import natural_to_scs, segment_transformation_matrix
+from examples._shared.frames import natural_to_scs, rodrigues_matrix, segment_transformation_matrix
 
 
 def scapulothoracic_angles(model, Q: np.ndarray, joint_name: str = "Scapulothoracic") -> np.ndarray:
@@ -269,13 +269,7 @@ class EllipsoidOrientation(CalibrationParameter):
     @staticmethod
     def rotation_matrix(model, values) -> np.ndarray:
         """Numpy Rodrigues rotation of the solved values (the numeric twin of :func:`rodrigues`)."""
-        vector = np.asarray(values, dtype=float).reshape(3)
-        angle = float(np.linalg.norm(vector))
-        if angle < 1e-12:
-            return np.eye(3)
-        axis = vector / angle
-        K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
-        return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+        return rodrigues_matrix(values)
 
 
 class JointLength(CalibrationParameter):

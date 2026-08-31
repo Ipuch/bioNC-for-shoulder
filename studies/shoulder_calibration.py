@@ -37,7 +37,7 @@ from scipy.optimize import least_squares
 from bionc import NaturalCoordinates
 
 from examples._shared.c3d_data import MultiC3dData, load_markers_multi, select_calibration_frames
-from examples._shared.frames import segment_transformation_matrix
+from examples._shared.frames import rodrigues_matrix, segment_transformation_matrix
 from examples.clinical.model import (
     GH_GLENOID,
     GH_HEAD,
@@ -148,15 +148,6 @@ def to_segment_frame(model, Q: np.ndarray, points_global: np.ndarray, segment: s
     return local
 
 
-def _rodrigues(vector: np.ndarray) -> np.ndarray:
-    angle = float(np.linalg.norm(vector))
-    if angle < 1e-12:
-        return np.eye(3)
-    axis = vector / angle
-    K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
-    return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
-
-
 def thorax_reference(model, markers: np.ndarray) -> dict:
     """
     A subject-sized box for the thoracic ellipsoid, from the four thorax landmarks themselves.
@@ -247,7 +238,7 @@ def fit_ellipsoid(
 
     def residual(parameters):
         semi_axes, center, rotation_vector = parameters[:3], parameters[3:6], parameters[6:]
-        surface = ellipsoid_surface_distance_mm(cloud, semi_axes, center, _rodrigues(rotation_vector)) / 1000
+        surface = ellipsoid_surface_distance_mm(cloud, semi_axes, center, rodrigues_matrix(rotation_vector)) / 1000
         return np.concatenate([surface, prior_scale * (semi_axes - reference["scale"])])
 
     solution = least_squares(residual, start, bounds=(lower, upper))
@@ -260,7 +251,7 @@ def fit_ellipsoid(
     return dict(
         semi_axes=semi_axes,
         center=center,
-        rotation=_rodrigues(rotation_vector),
+        rotation=rodrigues_matrix(rotation_vector),
         residual_mm=float(np.sqrt(np.mean(surface_mm**2))),
         prior_pull_mm=float(np.sqrt(np.mean((semi_axes - reference["scale"]) ** 2)) * 1000),
         at_bounds=at_bounds,

@@ -3,6 +3,24 @@
 import numpy as np
 
 
+def rodrigues_matrix(rotation_vector) -> np.ndarray:
+    """
+    Rotation matrix of an axis-angle (Rodrigues) vector, whose norm is the angle in radians.
+
+    The numeric twin of :func:`studies.kinematic_calibration.rodrigues`, which builds the same
+    rotation out of CasADi MX so the NLP can differentiate it. The calibration solves for the
+    vector symbolically and then writes the answer back through this function, so the two must
+    agree -- ``tests/test_rotations.py`` pins that.
+    """
+    vector = np.asarray(rotation_vector, dtype=float).reshape(3)
+    angle = float(np.linalg.norm(vector))
+    if angle < 1e-12:
+        return np.eye(3)
+    axis = vector / angle
+    K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+
+
 def segment_transformation_matrix(model, segment_name: str) -> np.ndarray:
     """
     The map ``M`` from *natural* to orthonormal *segment* coordinates: ``p_scs = M @ p_nat``.

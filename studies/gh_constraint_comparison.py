@@ -44,7 +44,7 @@ JOINT_NAMES = ["Freeflyer", "Scapulothoracic", "Glenohumeral"]
 
 def run_config(gh_config: str) -> dict:
     """Build the all-FREE-except-GH model, solve the IK and gather the metrics."""
-    model = build_model(DATA, clavicle_constraint=False, glenohumeral=gh_config)
+    model = build_model(DATA, clavicle_constraint=True, glenohumeral=gh_config)
     ik, Qopt = run_ik(model, DATA, method="dik")
     global_rmse, per_frame_rmse = marker_rmse_mm(ik)
     return dict(

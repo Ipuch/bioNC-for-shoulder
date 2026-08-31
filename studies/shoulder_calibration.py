@@ -27,11 +27,9 @@ Run (from the repo root, inside the ``bionc`` conda env):
     python studies/shoulder_calibration.py
 """
 
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root on the path
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -49,7 +47,7 @@ from examples.clinical.model import (
     glenohumeral_centres,
     set_glenohumeral_centres,
 )
-from kinematic_calibration import (
+from studies.kinematic_calibration import (
     EllipsoidOrientation,
     EllipsoidSemiAxes,
     JointLength,

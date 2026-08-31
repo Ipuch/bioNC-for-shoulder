@@ -24,19 +24,6 @@ Run:
     python studies/figures/frame_selection_replay.py [--all-frames] [--trial FUNCTIONAL1]
 """
 
-import sys
-from pathlib import Path
-
-# Work both as `python studies/figures/<name>.py` and as `python -m studies.figures.<name>`: the
-# plain-script form puts only this directory on sys.path and leaves the package unset, so the repo
-# root and studies/ have to be added before any project import, and __package__ set for `from .`.
-_REPO = Path(__file__).resolve().parents[2]
-for _path in (str(_REPO), str(_REPO / "studies")):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
-if __package__ in (None, ""):
-    __package__ = "studies.figures"
-
 import argparse
 
 import numpy as np
@@ -44,7 +31,7 @@ import numpy as np
 from examples._shared.c3d_data import MultiC3dData, load_markers_multi, select_calibration_frames
 from examples._shared.ik import load_markers
 from examples.clinical.model import build_model_constrained
-from shoulder_calibration import FRAMES_PER_TRIAL, MARKER_SET, trial_label, trials
+from studies.shoulder_calibration import FRAMES_PER_TRIAL, MARKER_SET, trial_label, trials
 
 
 def replay(model, markers: np.ndarray, name: str) -> None:

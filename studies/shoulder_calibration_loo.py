@@ -33,10 +33,8 @@ This script only computes and reports; the figures live in :mod:`studies.figures
 which reads that cache, so you can redraw them without re-solving anything.
 """
 
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root on the path
 
 import numpy as np
 
@@ -46,7 +44,7 @@ from examples._shared.c3d_data import MultiC3dData
 from examples._shared.frames import scs_to_natural
 from examples._shared.ik import load_markers
 from examples.clinical.model import build_model_constrained, build_model_free
-from shoulder_calibration import (
+from studies.shoulder_calibration import (
     MARKER_SET,
     calibrate,
     ellipsoid_surface_distance_mm,

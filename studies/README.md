@@ -5,7 +5,8 @@ These are short analysis scripts that go **beyond the tutorial** in
 `examples/<dataset>/model.py` and the shared IK/plotting helpers, so no modelling code is
 duplicated here — a study only adds its specific experiment on top.
 
-Run from the **repo root**, inside the `bionc` conda environment:
+Run inside the `bionc` conda environment, once this repository is installed
+(`pip install -e . --no-deps` — see the [root README](../README.md)):
 
 ```bash
 conda activate bionc
@@ -14,6 +15,9 @@ PYTHONPATH=$HOME/ProjetsPython/bioNC python studies/gh_constraint_comparison.py
 
 (`bionc` itself is not installed in that environment — it resolves through the sibling source tree.
 Either set `PYTHONPATH` as above or run `pip install -e ../bioNC` once.)
+
+Both invocation forms work — `python studies/<name>.py` and `python -m studies.<name>` — because
+the packages are installed rather than patched onto `sys.path` at the top of every script.
 
 | Script | Dataset | Question |
 | --- | --- | --- |

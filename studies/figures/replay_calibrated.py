@@ -26,19 +26,6 @@ Run:
     python studies/figures/replay_calibrated.py --trial ANALYTIC2 --fold FUNCTIONAL4 --compare-free
 """
 
-import sys
-from pathlib import Path
-
-# Work both as `python studies/figures/<name>.py` and as `python -m studies.figures.<name>`: the
-# plain-script form puts only this directory on sys.path and leaves the package unset, so the repo
-# root and studies/ have to be added before any project import, and __package__ set for `from .`.
-_REPO = Path(__file__).resolve().parents[2]
-for _path in (str(_REPO), str(_REPO / "studies")):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
-if __package__ in (None, ""):
-    __package__ = "studies.figures"
-
 import argparse
 
 import numpy as np
@@ -49,8 +36,8 @@ from examples._shared.c3d_data import MultiC3dData
 from examples._shared.ik import load_markers
 from examples._shared.viz import named_bionc_model, overlay_ellipsoids
 from examples.clinical.model import build_model_free
-from shoulder_calibration import MARKER_SET, rebuild_calibrated_model, trial_label, trials
-from shoulder_calibration_loo import RESULTS_DIR
+from studies.shoulder_calibration import MARKER_SET, rebuild_calibrated_model, trial_label, trials
+from studies.shoulder_calibration_loo import RESULTS_DIR
 
 ELLIPSOID_RGBA = (220, 70, 70, 90)  # translucent surface, opaque contact point
 

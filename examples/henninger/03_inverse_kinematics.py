@@ -10,10 +10,8 @@ Run (from the repo root, inside the ``bionc`` conda env):
     python examples/henninger/03_inverse_kinematics.py
 """
 
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root on the path
 
 import matplotlib.pyplot as plt
 

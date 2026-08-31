@@ -21,26 +21,12 @@ Run:
     python studies/figures/leave_one_out.py [--save]
 """
 
-import sys
-from pathlib import Path
-
-# Work both as `python studies/figures/<name>.py` and as `python -m studies.figures.<name>`: the
-# plain-script form puts only this directory on sys.path and leaves the package unset, so the repo
-# root and studies/ have to be added before any project import, and __package__ set for `from .`.
-_REPO = Path(__file__).resolve().parents[2]
-for _path in (str(_REPO), str(_REPO / "studies")):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
-if __package__ in (None, ""):
-    __package__ = "studies.figures"
-
 import numpy as np
 from matplotlib import pyplot as plt
 
-from shoulder_calibration import trial_kind, trial_label
-from shoulder_calibration_loo import RESULTS_DIR, held_out_mask
-
-from . import finish, parse_args
+from studies.shoulder_calibration import trial_kind, trial_label
+from studies.shoulder_calibration_loo import RESULTS_DIR, held_out_mask
+from studies.figures import finish, parse_args
 
 
 def load_folds() -> list[dict]:

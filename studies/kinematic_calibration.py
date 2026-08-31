@@ -27,11 +27,6 @@ The implementation is distilled from ``bionc``'s ``InverseKinematics`` (CasADi b
 the per-frame symbolic Q, the marker objective, and the rigid-body / joint / direct-frame constraints.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root on the path
-
 import numpy as np
 from casadi import MX, Function, cos, dot, horzcat, nlpsol, sin, vertcat
 

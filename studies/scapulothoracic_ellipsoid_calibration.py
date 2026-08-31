@@ -31,10 +31,8 @@ Run (from the repo root, inside the ``bionc`` conda env):
     python studies/scapulothoracic_ellipsoid_calibration.py
 """
 
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root on the path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -48,8 +46,8 @@ from examples.clinical.model import (
     build_point_on_ellipsoid_model,
     first_frame_guess,
 )
-from kinematic_calibration import EllipsoidSemiAxes, KinematicCalibration, MarkerPosition, scapulothoracic_angles
-from shoulder_calibration import (
+from studies.kinematic_calibration import EllipsoidSemiAxes, KinematicCalibration, MarkerPosition, scapulothoracic_angles
+from studies.shoulder_calibration import (
     PARAMETER_PRIOR,
     contact_point_cloud,
     ellipsoid_bounds,
@@ -136,7 +134,6 @@ def calibrate(ellipsoid_model: str, base_model, markers: np.ndarray, marker_set:
     print(f"[{ellipsoid_model}] max joint residual = {np.max(out['max_joint_residual_per_frame']):.3e}")
     print(f"[{ellipsoid_model}] parameters at bounds = {out['parameters_at_bounds'] or 'none'}")
     return dict(model=model, Qopt=Qopt, out=out)
-
 
 
 def visualize(named_models: dict, markers: np.ndarray, marker_names, ellipsoids=()) -> None:

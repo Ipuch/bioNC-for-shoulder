@@ -17,11 +17,7 @@ Pass ``--save`` to write PNGs into ``results/figures/`` instead of opening windo
 """
 
 import argparse
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root on the path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # studies/ on the path
 
 import matplotlib.pyplot as plt
 

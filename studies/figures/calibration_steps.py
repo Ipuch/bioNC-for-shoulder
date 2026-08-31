@@ -22,19 +22,6 @@ Run:
     python studies/figures/calibration_steps.py [--save] [--refresh]
 """
 
-import sys
-from pathlib import Path
-
-# Work both as `python studies/figures/<name>.py` and as `python -m studies.figures.<name>`: the
-# plain-script form puts only this directory on sys.path and leaves the package unset, so the repo
-# root and studies/ have to be added before any project import, and __package__ set for `from .`.
-_REPO = Path(__file__).resolve().parents[2]
-for _path in (str(_REPO), str(_REPO / "studies")):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
-if __package__ in (None, ""):
-    __package__ = "studies.figures"
-
 import numpy as np
 from matplotlib import pyplot as plt
 
@@ -43,16 +30,15 @@ from bionc import NaturalCoordinates
 from examples._shared.c3d_data import MultiC3dData, load_markers_multi, load_named_markers
 from examples._shared.frames import scs_to_natural
 from examples.clinical.model import GH_GLENOID, GH_HEAD, build_model_free
-from shoulder_calibration import (
+from studies.shoulder_calibration import (
     MARKER_SET,
     calibrate,
     ellipsoid_surface_distance_mm,
     to_segment_frame,
     trials,
 )
-from shoulder_calibration_loo import point_in_global
-
-from . import RESULTS_DIR, STEP_COLORS, finish, parse_args
+from studies.shoulder_calibration_loo import point_in_global
+from studies.figures import RESULTS_DIR, STEP_COLORS, finish, parse_args
 
 CACHE = RESULTS_DIR / "calibration" / "steps.npz"
 

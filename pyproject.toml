@@ -1,6 +1,14 @@
 # This repository is an *examples* repo: it does not build the `bionc` package (that lives in
 # https://github.com/Ipuch/bioNC and is installed separately, e.g. from the `bionc` conda env).
 # Only project metadata and the dependencies needed to run the examples are declared below.
+#
+# `examples` and `studies` are declared as packages so that `pip install -e . --no-deps` puts the
+# repo root on the path once and for all. That is what lets every script and test say
+# `from studies.kinematic_calibration import ...` instead of opening with a `sys.path.insert`.
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "bionc-for-shoulder"
@@ -42,6 +50,23 @@ keywords = [
     "holonomic-constraints",
     "natural-coordinates"
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [project.urls]
 homepage = "http://github.com/Ipuch/bionc"
 bionc = "https://github.com/Ipuch/bioNC"
+
+[tool.setuptools]
+packages = [
+    "examples",
+    "examples._shared",
+    "examples.clinical",
+    "examples.henninger",
+    "studies",
+    "studies.figures",
+]
+
+[tool.black]
+line-length = 120

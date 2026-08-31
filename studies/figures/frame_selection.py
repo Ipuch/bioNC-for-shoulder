@@ -22,19 +22,6 @@ Run:
     python studies/figures/frame_selection.py [--save]
 """
 
-import sys
-from pathlib import Path
-
-# Work both as `python studies/figures/<name>.py` and as `python -m studies.figures.<name>`: the
-# plain-script form puts only this directory on sys.path and leaves the package unset, so the repo
-# root and studies/ have to be added before any project import, and __package__ set for `from .`.
-_REPO = Path(__file__).resolve().parents[2]
-for _path in (str(_REPO), str(_REPO / "studies")):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
-if __package__ in (None, ""):
-    __package__ = "studies.figures"
-
 import numpy as np
 from matplotlib import pyplot as plt
 
@@ -47,9 +34,8 @@ from examples._shared.c3d_data import (
 )
 from examples._shared.ik import load_markers
 from examples.clinical.model import build_model_constrained
-from shoulder_calibration import FRAMES_PER_TRIAL, MARKER_SET, contact_point_cloud, trial_kind, trial_label, trials
-
-from . import KIND_COLORS, finish, parse_args
+from studies.shoulder_calibration import FRAMES_PER_TRIAL, MARKER_SET, contact_point_cloud, trial_kind, trial_label, trials
+from studies.figures import KIND_COLORS, finish, parse_args
 
 COARSE_STRIDE = 10  # the stride select_calibration_frames scans on; the candidate set
 ANGLE_LABELS = ["ST Y", "ST X", "ST Z", "GH Y1", "GH X", "GH Y2"]

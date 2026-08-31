@@ -20,6 +20,11 @@ from bionc import C3dData
 
 from examples._shared.ik import load_markers
 
+# Stride the calibration scans a trial on to build its candidate set. One truth: the figures that
+# draw the selection must scan exactly what the selection scanned, or they mislabel which frames
+# were picked.
+COARSE_STRIDE = 10
+
 
 class MultiC3dData:
     """
@@ -144,8 +149,28 @@ def farthest_point_sample(features: np.ndarray, nb_samples: int) -> np.ndarray:
     return np.sort(np.array(picked))
 
 
+def posture_scan(model, paths, coarse_stride: int = COARSE_STRIDE) -> dict[str, dict]:
+    """
+    The candidate set the frame selection chooses from: per trial, ``{candidates, features}``.
+
+    ``candidates`` are frame numbers relative to the full trial, ``features`` the matching rows of
+    :func:`posture_features`. Scanning is the expensive half (it reads the c3d and reconstructs
+    every candidate frame), so it is exposed separately: the figures want the same scan the
+    selection ran on, and recomputing it would both cost a second pass and risk disagreeing with it.
+    """
+    scan = {}
+    for path in paths:
+        path = str(path)
+        markers = load_markers(model, path, stride=coarse_stride)
+        scan[path] = dict(
+            candidates=np.arange(markers.shape[2]) * coarse_stride,
+            features=posture_features(model, markers),
+        )
+    return scan
+
+
 def select_calibration_frames(
-    model, paths, per_trial: int = 35, coarse_stride: int = 10
+    model, paths, per_trial: int = 35, coarse_stride: int = COARSE_STRIDE, scan: dict = None
 ) -> dict[str, np.ndarray]:
     """
     Frames each trial contributes to the all-frames calibration, spread over the *workspace*.
@@ -155,13 +180,13 @@ def select_calibration_frames(
     farthest-point sampled in the posture space of :func:`posture_features`, so the selection
     covers the range of scapular (and glenohumeral) configurations the trial actually visited.
 
+    Pass ``scan`` (from :func:`posture_scan`) to reuse a scan you already have; otherwise one is
+    made here.
+
     Returns ``{path: frame_numbers}`` with frame numbers relative to the full trial. Deterministic.
     """
-    selection = {}
-    for path in paths:
-        path = str(path)
-        markers = load_markers(model, path, stride=coarse_stride)
-        candidates = np.arange(markers.shape[2]) * coarse_stride
-        picked = farthest_point_sample(posture_features(model, markers), per_trial)
-        selection[path] = candidates[picked]
-    return selection
+    scan = posture_scan(model, paths, coarse_stride) if scan is None else scan
+    return {
+        path: entry["candidates"][farthest_point_sample(entry["features"], per_trial)]
+        for path, entry in scan.items()
+    }

@@ -30,25 +30,21 @@ import argparse
 
 import numpy as np
 
-from bionc import InverseKinematics
-
 from examples._shared.c3d_data import MultiC3dData
-from examples._shared.ik import load_markers
-from examples._shared.viz import named_bionc_model, overlay_ellipsoids
+from examples._shared.ik import solve_trial
+from examples._shared.viz import ELLIPSOID_RGBA, named_bionc_model, overlay_ellipsoids
 from examples.clinical.model import build_model_free
 from studies.shoulder_calibration import MARKER_SET, rebuild_calibrated_model, trial_label, trials
-from studies.shoulder_calibration_loo import RESULTS_DIR
-
-ELLIPSOID_RGBA = (220, 70, 70, 90)  # translucent surface, opaque contact point
+from studies.shoulder_calibration_loo import LOO_DIR
 
 
 def load_fold(name: str) -> dict:
     """The cached fold whose held-out trial is ``name``."""
-    path = RESULTS_DIR / f"fold_{name}.npz"
+    path = LOO_DIR / f"fold_{name}.npz"
     if not path.exists():
-        available = sorted(p.stem.replace("fold_", "") for p in RESULTS_DIR.glob("fold_*.npz"))
+        available = sorted(p.stem.replace("fold_", "") for p in LOO_DIR.glob("fold_*.npz"))
         raise SystemExit(
-            f"no cached fold for {name!r} in {RESULTS_DIR}.\n"
+            f"no cached fold for {name!r} in {LOO_DIR}.\n"
             + (f"available: {', '.join(available)}" if available else
                "run `python studies/shoulder_calibration_loo.py` first.")
         )
@@ -67,15 +63,6 @@ def model_from_fold(fold: dict):
         rotation=fold.get("step3_axes_scs"),
         marker_set=MARKER_SET,
     )
-
-
-def solve(model, path: str, stride: int):
-    """Differential IK on the whole trial; returns ``(markers, Qopt, rmse_mm)``."""
-    markers = load_markers(model, path, stride=stride)
-    ik = InverseKinematics(model, markers)
-    Qopt = ik.solve(method="dik")
-    rmse = float(np.sqrt(np.mean((ik.sol()["marker_residuals_norm"] * 1000) ** 2)))
-    return markers, np.asarray(Qopt), rmse
 
 
 def main():
@@ -100,7 +87,8 @@ def main():
     )
 
     model = model_from_fold(fold)
-    markers, Qopt, rmse = solve(model, path, arguments.stride)
+    reconstruction = solve_trial(model, path, stride=arguments.stride)
+    markers, Qopt, rmse = reconstruction["markers"], reconstruction["Qopt"], reconstruction["rmse_mm"]
     print(f"calibrated model: {Qopt.shape[1]} frames, marker RMSE {rmse:.2f} mm")
 
     from pyorerun import PhaseRerun, PyoMarkers
@@ -108,7 +96,8 @@ def main():
     named = {"calibrated": (model, Qopt)}
     if arguments.compare_free:
         free_model = build_model_free(MultiC3dData([str(p) for p in fold["train"]]), marker_set=MARKER_SET)
-        _, free_Q, free_rmse = solve(free_model, path, arguments.stride)
+        free = solve_trial(free_model, path, stride=arguments.stride)
+        free_Q, free_rmse = free["Qopt"], free["rmse_mm"]
         print(f"all-FREE reference: marker RMSE {free_rmse:.2f} mm")
         named["all-FREE"] = (free_model, free_Q)
 

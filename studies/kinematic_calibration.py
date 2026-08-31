@@ -37,6 +37,7 @@ from bionc.bionc_casadi.natural_vector import NaturalVector
 from bionc.utils.casadi_utils import sarrus
 
 from examples._shared.frames import natural_to_scs, rodrigues_matrix, segment_transformation_matrix
+from examples._shared.ik import per_frame_rmse_mm, rmse_mm
 
 
 def scapulothoracic_angles(model, Q: np.ndarray, joint_name: str = "Scapulothoracic") -> np.ndarray:
@@ -533,9 +534,7 @@ class KinematicCalibration:
             joint_residuals[f] = float(np.max(np.abs(np.array(self._fun_joint(q, self.theta)))))
             rigid_residuals[f] = float(np.max(np.abs(np.array(self._fun_rigid(q)))))
 
-        marker_norm_mm = np.sqrt(np.sum(marker_xyz**2, axis=0)) * 1000  # (nb_markers, nb_frames)
-        per_frame_rmse_mm = np.sqrt(np.mean(marker_norm_mm**2, axis=0))
-        global_rmse_mm = float(np.sqrt(np.mean(marker_norm_mm**2)))
+        marker_norm_m = np.sqrt(np.sum(marker_xyz**2, axis=0))  # (nb_markers, nb_frames)
 
         summary = dict(
             success=self.success,
@@ -544,9 +543,9 @@ class KinematicCalibration:
             parameters={label: float(value) for label, value in zip(self.parameter_labels, self.theta)},
             parameters_at_bounds=self.parameters_at_bounds(),
             objective=self.objective_value,
-            marker_rmse_mm=global_rmse_mm,
-            per_frame_marker_rmse_mm=per_frame_rmse_mm,
-            marker_residuals_norm_mm=marker_norm_mm,
+            marker_rmse_mm=rmse_mm(marker_norm_m),
+            per_frame_marker_rmse_mm=per_frame_rmse_mm(marker_norm_m),
+            marker_residuals_norm_mm=marker_norm_m * 1000,
             max_joint_residual_per_frame=joint_residuals,
             max_rigid_residual_per_frame=rigid_residuals,
         )

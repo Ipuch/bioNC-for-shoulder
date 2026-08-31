@@ -25,18 +25,18 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 from studies.shoulder_calibration import trial_kind, trial_label
-from studies.shoulder_calibration_loo import RESULTS_DIR, held_out_mask
+from studies.shoulder_calibration_loo import LOO_DIR, held_out_mask
 from studies.figures import finish, parse_args
 
 
 def load_folds() -> list[dict]:
     """Every cached fold, in trial order. Raises if the sweep has not been run."""
-    files = sorted(RESULTS_DIR.glob("fold_*.npz"))
+    files = sorted(LOO_DIR.glob("fold_*.npz"))
     if not files:
         raise SystemExit(
-            f"no folds cached in {RESULTS_DIR}. Run `python studies/shoulder_calibration_loo.py` first."
+            f"no folds cached in {LOO_DIR}. Run `python studies/shoulder_calibration_loo.py` first."
         )
-    print(f"loaded {len(files)} folds from {RESULTS_DIR}")
+    print(f"loaded {len(files)} folds from {LOO_DIR}")
     return [dict(np.load(path, allow_pickle=True)) for path in files]
 
 

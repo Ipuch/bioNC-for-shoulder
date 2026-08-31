@@ -38,13 +38,12 @@ from pathlib import Path
 
 import numpy as np
 
-from bionc import InverseKinematics
-
 from examples._shared.c3d_data import MultiC3dData
 from examples._shared.frames import scs_to_natural
-from examples._shared.ik import load_markers
+from examples._shared.ik import solve_trial
 from examples.clinical.model import build_model_constrained, build_model_free
 from studies.shoulder_calibration import (
+    FRAMES_PER_TRIAL,
     MARKER_SET,
     calibrate,
     ellipsoid_surface_distance_mm,
@@ -54,25 +53,14 @@ from studies.shoulder_calibration import (
     trials,
 )
 
-RESULTS_DIR = Path(__file__).resolve().parents[1] / "results" / "loo"
+LOO_DIR = Path(__file__).resolve().parents[1] / "results" / "loo"
 # Every 5th frame of each full trial (20 Hz). The metric is a per-frame spatial residual, not a
 # temporal signal, so decimating costs nothing but turns three differential IK solves per
 # (fold, trial) from ~20 s into ~8 s -- the difference between a 75 and a 35 minute sweep.
 EVAL_STRIDE = 5
-FRAMES_PER_TRIAL = 35
 
 
 # --------------------------------------------------------------------------------- evaluation
-def marker_groups(model) -> dict[str, np.ndarray]:
-    """Indices into ``model.marker_names_technical`` grouped by the segment that carries them."""
-    groups, offset = {}, 0
-    for name in model.segments.keys():
-        count = model.segments[name].nb_markers_technical
-        groups[name] = np.arange(offset, offset + count)
-        offset += count
-    return groups
-
-
 def point_in_global(model, segment_name: str, position_natural, Q: np.ndarray) -> np.ndarray:
     """Trajectory ``(3, nb_frames)`` of a segment-fixed point, given natural coordinates ``Q``."""
     from bionc.bionc_numpy.natural_vector import NaturalVector
@@ -81,27 +69,6 @@ def point_in_global(model, segment_name: str, position_natural, Q: np.ndarray) -
     segment = model.segments[segment_name]
     block = slice(12 * segment.index, 12 * segment.index + 12)
     return interpolation @ np.asarray(Q)[block, :]
-
-
-def solve_trial(model, path: str, stride: int = EVAL_STRIDE) -> dict:
-    """Differential IK of ``model`` on one whole trial, with the RMSE split by marker group."""
-    markers = load_markers(model, path, stride=stride)
-    ik = InverseKinematics(model, markers)
-    Qopt = ik.solve(method="dik")
-    residuals_mm = ik.sol()["marker_residuals_norm"] * 1000  # (nb_markers, nb_frames)
-
-    per_group = {
-        name: float(np.sqrt(np.mean(residuals_mm[index] ** 2)))
-        for name, index in marker_groups(model).items()
-        if len(index)
-    }
-    return dict(
-        markers=markers,
-        Qopt=Qopt,
-        rmse_mm=float(np.sqrt(np.mean(residuals_mm**2))),
-        rmse_by_group_mm=per_group,
-        per_frame_rmse_mm=np.sqrt(np.mean(residuals_mm**2, axis=0)),
-    )
 
 
 def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_STRIDE) -> dict:
@@ -205,8 +172,8 @@ def _fold_payload(result, evaluations, held_out: str) -> dict:
 
 def run_fold(held_out: str, paths: list[str], *, frames_per_trial: int, stride: int, cache: bool = True) -> dict:
     """Calibrate on every trial but ``held_out``, then score the fold on all of them."""
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    cache_file = RESULTS_DIR / f"fold_{trial_label(held_out)}.npz"
+    LOO_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = LOO_DIR / f"fold_{trial_label(held_out)}.npz"
     if cache and cache_file.exists():
         print(f"[{trial_label(held_out)}] cached")
         return dict(np.load(cache_file, allow_pickle=True))
@@ -331,8 +298,8 @@ def main():
     folds = [run_fold(path, paths, frames_per_trial=FRAMES_PER_TRIAL, stride=EVAL_STRIDE) for path in paths]
 
     print(summarise(folds))
-    write_csv(folds, RESULTS_DIR / "summary.csv")
-    print(f"\nper-(fold, trial) rows written to {RESULTS_DIR / 'summary.csv'}")
+    write_csv(folds, LOO_DIR / "summary.csv")
+    print(f"\nper-(fold, trial) rows written to {LOO_DIR / 'summary.csv'}")
     print("figures: python studies/figures/leave_one_out.py")
 
 

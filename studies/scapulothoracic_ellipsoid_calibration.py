@@ -38,7 +38,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from examples._shared.ik import load_markers, marker_rmse_mm, run_ik
-from examples._shared.viz import named_bionc_model, overlay_ellipsoids
+from examples._shared.viz import ELLIPSOID_RGBA, named_bionc_model, overlay_ellipsoids
 from examples.clinical.model import (
     build_ellipsoid_model,
     build_model_free,
@@ -61,7 +61,7 @@ ELLIPSOID_MODELS = ("tangent", "point")  # both ellipsoid joints are calibrated 
 ELLIPSOID_BUILDERS = {"tangent": build_ellipsoid_model, "point": build_point_on_ellipsoid_model}
 ELLIPSOID_LABELS = {"tangent": "tangent ellipsoid", "point": "one-point ellipsoid"}
 MODEL_COLORS = {"tangent": "tab:red", "point": "tab:purple"}
-ELLIPSOID_RGBA = {"tangent": (220, 70, 70, 90), "point": (150, 70, 200, 90)}  # rerun overlay colors
+ELLIPSOID_COLORS = {"tangent": ELLIPSOID_RGBA, "point": (150, 70, 200, 90)}  # rerun overlay colors
 MARKER_SET = "anatomical"  # one marker set for the whole study (baseline + calibration must match)
 
 def warm_start_theta(model, markers: np.ndarray) -> tuple:
@@ -247,7 +247,7 @@ def main():
                 results[model]["Qopt"],
                 results[model]["out"]["semi_axes"],
                 results[model]["out"]["ellipsoid_center_natural"],
-                ELLIPSOID_RGBA[model],
+                ELLIPSOID_COLORS[model],
             )
         )
     visualize(named_models, markers, base_model.marker_names_technical, ellipsoids=ellipsoids)

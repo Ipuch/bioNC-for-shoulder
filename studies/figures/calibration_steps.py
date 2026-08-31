@@ -29,6 +29,7 @@ from bionc import NaturalCoordinates
 
 from examples._shared.c3d_data import MultiC3dData, load_markers_multi, load_named_markers
 from examples._shared.frames import scs_to_natural
+from examples._shared.ik import rmse_mm
 from examples.clinical.model import GH_GLENOID, GH_HEAD, build_model_free
 from studies.shoulder_calibration import (
     MARKER_SET,
@@ -112,7 +113,7 @@ def _free_rmse(free_model, markers, Q) -> np.ndarray:
         residual = np.asarray(
             free_model.markers_constraints(markers[:3, :, frame], NaturalCoordinates(Q[:, frame]), only_technical=True)
         ).reshape(3, -1, order="F")
-        per_frame[frame] = np.sqrt(np.mean(np.sum(residual**2, axis=0))) * 1000
+        per_frame[frame] = rmse_mm(np.linalg.norm(residual, axis=0))
     return per_frame
 
 

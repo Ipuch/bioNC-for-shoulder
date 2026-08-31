@@ -89,38 +89,6 @@ def trial_kind(path) -> str:
 
 
 # ----------------------------------------------------------------- ellipsoid warm start
-def contact_point_cloud(model, markers: np.ndarray, Q: np.ndarray = None) -> np.ndarray:
-    """
-    The scapula contact point over every frame, expressed in the THORAX segment coordinate system.
-
-    The contact point is the centroid of the three scapula landmarks (RSAA/RSIA/RSRS, the ISB
-    AA/AI/TS), which is what the one-point ellipsoid joint constrains. Expressing it in the thorax
-    frame turns the trial into a point cloud on the surface to be fitted -- the ellipsoid warm start
-    is then an ordinary surface fit rather than a guess.
-
-    ``Q`` defaults to ``model.Q_from_markers(markers)``; pass an inverse-kinematics solution to place
-    the cloud with a reconstruction that enforced the model's constraints.
-
-    Returns ``(3, nb_frames)`` in metres.
-    """
-    Q = np.asarray(model.Q_from_markers(markers) if Q is None else Q)
-    thorax = model.segments["THORAX"]
-    M = segment_transformation_matrix(model, "THORAX")
-    names = list(model.marker_names_technical)
-    landmarks = [names.index(name) for name in SCAPULA_LANDMARKS]
-
-    cloud = np.zeros((3, Q.shape[1]))
-    for frame in range(Q.shape[1]):
-        Q_thorax = NaturalCoordinates(Q[:, frame]).vector(thorax.index)
-        rp = np.asarray(Q_thorax.rp, dtype=float).reshape(3)
-        uvw = np.column_stack(
-            [np.asarray(Q_thorax.u).reshape(3), np.asarray(Q_thorax.v).reshape(3), np.asarray(Q_thorax.w).reshape(3)]
-        )
-        contact = markers[:3, landmarks, frame].mean(axis=1)
-        cloud[:, frame] = M @ np.linalg.inv(uvw) @ (contact - rp)
-    return cloud
-
-
 def to_segment_frame(model, Q: np.ndarray, points_global: np.ndarray, segment: str = "THORAX") -> np.ndarray:
     """
     Express a global trajectory ``(3, nb_frames)`` in a segment's own coordinate system, per frame.
@@ -128,6 +96,9 @@ def to_segment_frame(model, Q: np.ndarray, points_global: np.ndarray, segment: s
     The inverse of the convention ``add_natural_marker_from_segment_coordinates`` uses:
     ``L = M @ inv([u, v, w]) @ (P - rp)`` with ``M`` from
     :func:`~examples._shared.frames.segment_transformation_matrix`.
+
+    This is the one place that conversion is written; everything that needs a global point in a
+    segment frame goes through here.
     """
     Q = np.asarray(Q)
     segment_object = model.segments[segment]
@@ -144,11 +115,36 @@ def to_segment_frame(model, Q: np.ndarray, points_global: np.ndarray, segment: s
                 np.asarray(Q_segment.w).reshape(3),
             ]
         )
-        local[:, frame] = M @ np.linalg.inv(uvw) @ (points_global[:, frame] - rp)
+        local[:, frame] = M @ np.linalg.solve(uvw, points_global[:, frame] - rp)
     return local
 
 
-def thorax_reference(model, markers: np.ndarray) -> dict:
+def _marker_indices(model, names) -> list[int]:
+    """Positions of ``names`` within ``model.marker_names_technical``."""
+    technical = list(model.marker_names_technical)
+    return [technical.index(name) for name in names]
+
+
+def contact_point_cloud(model, markers: np.ndarray, Q: np.ndarray = None) -> np.ndarray:
+    """
+    The scapula contact point over every frame, expressed in the THORAX segment coordinate system.
+
+    The contact point is the centroid of the three scapula landmarks (RSAA/RSIA/RSRS, the ISB
+    AA/AI/TS), which is what the one-point ellipsoid joint constrains. Expressing it in the thorax
+    frame turns the trial into a point cloud on the surface to be fitted -- the ellipsoid warm start
+    is then an ordinary surface fit rather than a guess.
+
+    ``Q`` defaults to ``model.Q_from_markers(markers)``; pass an inverse-kinematics solution to place
+    the cloud with a reconstruction that enforced the model's constraints.
+
+    Returns ``(3, nb_frames)`` in metres.
+    """
+    Q = np.asarray(model.Q_from_markers(markers) if Q is None else Q)
+    contacts = markers[:3, _marker_indices(model, SCAPULA_LANDMARKS), :].mean(axis=1)
+    return to_segment_frame(model, Q, contacts, segment="THORAX")
+
+
+def thorax_reference(model, markers: np.ndarray, nb_frames_sampled: int = 40) -> dict:
     """
     A subject-sized box for the thoracic ellipsoid, from the four thorax landmarks themselves.
 
@@ -160,25 +156,21 @@ def thorax_reference(model, markers: np.ndarray) -> dict:
     subject's anatomy rather than magic numbers -- and, crucially, the calibration reports which
     parameters end up riding those bounds.
 
+    The landmarks barely move in the thorax frame, so ``nb_frames_sampled`` frames spread over the
+    trial are enough to size the box; the rest would only repeat them.
+
     Returns ``{"center": (3,), "scale": float}`` in metres.
     """
     Q = np.asarray(model.Q_from_markers(markers))
-    thorax = model.segments["THORAX"]
-    M = segment_transformation_matrix(model, "THORAX")
-    names = list(model.marker_names_technical)
-    landmarks = [names.index(name) for name in THORAX_LANDMARKS]
+    stride = max(1, Q.shape[1] // nb_frames_sampled)
+    Q_sampled = Q[:, ::stride]
 
-    points = []
-    for frame in range(0, Q.shape[1], max(1, Q.shape[1] // 40)):
-        Q_thorax = NaturalCoordinates(Q[:, frame]).vector(thorax.index)
-        rp = np.asarray(Q_thorax.rp, dtype=float).reshape(3)
-        uvw = np.column_stack(
-            [np.asarray(Q_thorax.u).reshape(3), np.asarray(Q_thorax.v).reshape(3), np.asarray(Q_thorax.w).reshape(3)]
-        )
-        for landmark in landmarks:
-            points.append(M @ np.linalg.inv(uvw) @ (markers[:3, landmark, frame] - rp))
-
-    points = np.array(points).T
+    points = np.hstack(
+        [
+            to_segment_frame(model, Q_sampled, markers[:3, landmark, ::stride], segment="THORAX")
+            for landmark in _marker_indices(model, THORAX_LANDMARKS)
+        ]
+    )
     return dict(
         center=(points.max(axis=1) + points.min(axis=1)) / 2,
         scale=float(((points.max(axis=1) - points.min(axis=1)) / 2).max()),

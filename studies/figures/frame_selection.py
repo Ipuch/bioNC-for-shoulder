@@ -26,10 +26,11 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 from examples._shared.c3d_data import (
+    COARSE_STRIDE,
     MultiC3dData,
     farthest_point_sample,
     load_markers_multi,
-    posture_features,
+    posture_scan,
     select_calibration_frames,
 )
 from examples._shared.ik import load_markers
@@ -37,24 +38,26 @@ from examples.clinical.model import build_model_constrained
 from studies.shoulder_calibration import FRAMES_PER_TRIAL, MARKER_SET, contact_point_cloud, trial_kind, trial_label, trials
 from studies.figures import KIND_COLORS, finish, parse_args
 
-COARSE_STRIDE = 10  # the stride select_calibration_frames scans on; the candidate set
 ANGLE_LABELS = ["ST Y", "ST X", "ST Z", "GH Y1", "GH X", "GH Y2"]
 
 
 def gather(paths, per_trial: int = FRAMES_PER_TRIAL) -> dict:
     """Candidate and selected posture features per trial, plus the pooled contact-point clouds."""
     model = build_model_constrained(MultiC3dData(paths), marker_set=MARKER_SET)
-    selection = select_calibration_frames(model, paths, per_trial=per_trial, coarse_stride=COARSE_STRIDE)
 
-    per_trial_data = {}
-    for path in paths:
-        markers = load_markers(model, path, stride=COARSE_STRIDE)
-        candidates = np.arange(markers.shape[2]) * COARSE_STRIDE
-        per_trial_data[path] = dict(
-            features=posture_features(model, markers),
-            candidates=candidates,
-            picked=np.searchsorted(candidates, selection[str(path)]),
+    # one scan, shared with the selection: this figure has to draw the candidate set the
+    # calibration actually chose from, not an independently recomputed lookalike
+    scan = posture_scan(model, paths)
+    selection = select_calibration_frames(model, paths, per_trial=per_trial, scan=scan)
+
+    per_trial_data = {
+        path: dict(
+            features=scan[str(path)]["features"],
+            candidates=scan[str(path)]["candidates"],
+            picked=np.searchsorted(scan[str(path)]["candidates"], selection[str(path)]),
         )
+        for path in paths
+    }
 
     candidate_markers = np.concatenate([load_markers(model, path, stride=COARSE_STRIDE) for path in paths], axis=2)
     return dict(

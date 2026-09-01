@@ -2,6 +2,9 @@
 
 import numpy as np
 
+from bionc import TransformationMatrixType
+from bionc.bionc_numpy.natural_marker import NaturalMarker, SegmentNaturalVector
+
 
 def rodrigues_matrix(rotation_vector) -> np.ndarray:
     """
@@ -38,8 +41,6 @@ def segment_transformation_matrix(model, segment_name: str) -> np.ndarray:
     semi-axes. Use :func:`add_vector_from_scs` and :func:`add_marker_from_scs` below rather than the
     bionc helpers wherever the geometry has to be exact.
     """
-    from bionc import TransformationMatrixType
-
     return np.asarray(
         model.segments[segment_name].compute_transformation_matrix(TransformationMatrixType.Buv), dtype=float
     ).T
@@ -59,8 +60,6 @@ def scs_to_natural(model, segment_name: str, position_scs) -> np.ndarray:
 
 def add_marker_from_scs(model, segment_name: str, name: str, position_scs, **flags):
     """Add a natural marker at a position given in orthonormal segment coordinates [m]."""
-    from bionc.bionc_numpy.natural_marker import NaturalMarker
-
     model.segments[segment_name].add_natural_marker(
         NaturalMarker(
             name=name,
@@ -73,8 +72,6 @@ def add_marker_from_scs(model, segment_name: str, name: str, position_scs, **fla
 
 def add_vector_from_scs(model, segment_name: str, name: str, direction_scs):
     """Add a natural vector for a direction given in orthonormal segment coordinates (normalised)."""
-    from bionc.bionc_numpy.natural_marker import SegmentNaturalVector
-
     direction = np.asarray(direction_scs, dtype=float).reshape(3)
     direction = direction / np.linalg.norm(direction)
     model.segments[segment_name].add_natural_vector(

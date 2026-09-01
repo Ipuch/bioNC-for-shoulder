@@ -16,9 +16,10 @@ from pathlib import Path
 
 import numpy as np
 
-from bionc import C3dData
+from bionc import C3dData, NaturalCoordinates
+from pyomeca import Markers
 
-from examples._shared.ik import load_markers
+from examples._shared.ik import c3d_length_factor, load_markers
 
 # Stride the calibration scans a trial on to build its candidate set. One truth: the figures that
 # draw the selection must scan exactly what the selection scanned, or they mislabel which frames
@@ -88,10 +89,6 @@ def load_named_markers(paths, names, frame_index: dict[str, np.ndarray] = None) 
     model does not track (``RCAS``, say, which is a non-technical thorax marker but one end of the
     clavicle). ``frame_index`` selects frames per trial; omit it to take every frame.
     """
-    from pyomeca import Markers
-
-    from examples._shared.ik import c3d_length_factor
-
     blocks = []
     for path in paths:
         path = str(path)
@@ -111,8 +108,6 @@ def posture_features(model, markers: np.ndarray) -> np.ndarray:
     and the glenohumeral centres have to be identified from. Columns are standardised so no angle
     dominates the distances.
     """
-    from bionc import NaturalCoordinates
-
     Q = np.asarray(model.Q_from_markers(markers))
     joint_names = list(model.joints.joint_names)
     wanted = [name for name in ("Scapulothoracic", "Glenohumeral") if name in joint_names]
@@ -187,6 +182,5 @@ def select_calibration_frames(
     """
     scan = posture_scan(model, paths, coarse_stride) if scan is None else scan
     return {
-        path: entry["candidates"][farthest_point_sample(entry["features"], per_trial)]
-        for path, entry in scan.items()
+        path: entry["candidates"][farthest_point_sample(entry["features"], per_trial)] for path, entry in scan.items()
     }

@@ -45,8 +45,11 @@ def load_fold(name: str) -> dict:
         available = sorted(p.stem.replace("fold_", "") for p in LOO_DIR.glob("fold_*.npz"))
         raise SystemExit(
             f"no cached fold for {name!r} in {LOO_DIR}.\n"
-            + (f"available: {', '.join(available)}" if available else
-               "run `python studies/shoulder_calibration_loo.py` first.")
+            + (
+                f"available: {', '.join(available)}"
+                if available
+                else "run `python studies/shoulder_calibration_loo.py` first."
+            )
         )
     return dict(np.load(path, allow_pickle=True))
 
@@ -68,7 +71,9 @@ def model_from_fold(fold: dict):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--trial", default="ANALYTIC4", help="trial to replay, e.g. ANALYTIC2")
-    parser.add_argument("--fold", default=None, help="fold whose calibration to use (default: the one holding out --trial)")
+    parser.add_argument(
+        "--fold", default=None, help="fold whose calibration to use (default: the one holding out --trial)"
+    )
     parser.add_argument("--stride", type=int, default=1, help="frame stride for the replay (default 1)")
     parser.add_argument("--compare-free", action="store_true", help="also show the all-FREE reconstruction")
     arguments = parser.parse_args()

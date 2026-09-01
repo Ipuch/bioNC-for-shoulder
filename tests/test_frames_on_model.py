@@ -58,7 +58,10 @@ def test_added_vectors_are_orthonormal_in_segment_coordinates(clinical_model):
 
     thorax = clinical_model.segments["THORAX"]
     axes = np.column_stack(
-        [natural_to_scs(clinical_model, "THORAX", thorax.vector_from_name(name).position) for name in ("AX_A", "AX_B", "AX_C")]
+        [
+            natural_to_scs(clinical_model, "THORAX", thorax.vector_from_name(name).position)
+            for name in ("AX_A", "AX_B", "AX_C")
+        ]
     )
 
     np.testing.assert_allclose(np.linalg.norm(axes, axis=0), 1.0, atol=1e-9)

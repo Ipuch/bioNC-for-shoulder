@@ -43,9 +43,7 @@ class TestSurfaceDistance:
         cloud = ellipsoid_patch(semi_axes, np.zeros(3))
         rotated = rotation @ cloud + center.reshape(3, 1)
 
-        np.testing.assert_allclose(
-            ellipsoid_surface_distance_mm(rotated, semi_axes, center, rotation), 0.0, atol=1e-9
-        )
+        np.testing.assert_allclose(ellipsoid_surface_distance_mm(rotated, semi_axes, center, rotation), 0.0, atol=1e-9)
         # and ignoring the rotation gives a genuinely different answer, i.e. it is really used
         assert np.abs(ellipsoid_surface_distance_mm(rotated, semi_axes, center)).max() > 1.0
 

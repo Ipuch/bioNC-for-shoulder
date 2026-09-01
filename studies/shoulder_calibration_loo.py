@@ -38,6 +38,8 @@ from pathlib import Path
 
 import numpy as np
 
+from bionc.bionc_numpy.natural_vector import NaturalVector
+
 from examples._shared.c3d_data import MultiC3dData
 from examples._shared.frames import scs_to_natural
 from examples._shared.ik import solve_trial
@@ -63,8 +65,6 @@ EVAL_STRIDE = 5
 # --------------------------------------------------------------------------------- evaluation
 def point_in_global(model, segment_name: str, position_natural, Q: np.ndarray) -> np.ndarray:
     """Trajectory ``(3, nb_frames)`` of a segment-fixed point, given natural coordinates ``Q``."""
-    from bionc.bionc_numpy.natural_vector import NaturalVector
-
     interpolation = np.asarray(NaturalVector(np.asarray(position_natural).reshape(3)).interpolate(), dtype=float)
     segment = model.segments[segment_name]
     block = slice(12 * segment.index, 12 * segment.index + 12)
@@ -110,8 +110,12 @@ def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_
 
     # how far apart the two calibrated centres land when nothing forces them together
     centres = result.step3.centres
-    glenoid = point_in_global(free_model, "RSCAPULA", scs_to_natural(result.model, "RSCAPULA", centres["glenoid"]), free["Qopt"])
-    head = point_in_global(free_model, "RHUMERUS", scs_to_natural(result.model, "RHUMERUS", centres["head"]), free["Qopt"])
+    glenoid = point_in_global(
+        free_model, "RSCAPULA", scs_to_natural(result.model, "RSCAPULA", centres["glenoid"]), free["Qopt"]
+    )
+    head = point_in_global(
+        free_model, "RHUMERUS", scs_to_natural(result.model, "RHUMERUS", centres["head"]), free["Qopt"]
+    )
     gh_gap_mm = np.linalg.norm(glenoid - head, axis=0) * 1000
 
     return dict(
@@ -254,8 +258,11 @@ def summarise(folds: list[dict]) -> str:
         f"glenohumeral centre gap on held-out trial {mean['gh_gap']:.2f} +- {sd['gh_gap']:.2f} mm",
     ]
 
-    lines += ["", "--- calibrated parameters across folds (mm) ---",
-              f"{'parameter':<38s} {'mean':>9s} {'sd':>8s} {'min':>9s} {'max':>9s}"]
+    lines += [
+        "",
+        "--- calibrated parameters across folds (mm) ---",
+        f"{'parameter':<38s} {'mean':>9s} {'sd':>8s} {'min':>9s} {'max':>9s}",
+    ]
     labels = list(folds[0]["parameter_labels"])
     values = np.array([fold["parameters"] for fold in folds]) * 1000
     for index, label in enumerate(labels):

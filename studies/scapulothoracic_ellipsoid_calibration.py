@@ -37,6 +37,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from bionc.bionc_numpy.enums import InitialGuessModeType
+
 from examples._shared.ik import load_markers, marker_rmse_mm, run_ik
 from examples._shared.viz import ELLIPSOID_RGBA, named_bionc_model, overlay_ellipsoids
 from examples.clinical.model import (
@@ -46,7 +48,12 @@ from examples.clinical.model import (
     build_point_on_ellipsoid_model,
     first_frame_guess,
 )
-from studies.kinematic_calibration import EllipsoidSemiAxes, KinematicCalibration, MarkerPosition, scapulothoracic_angles
+from studies.kinematic_calibration import (
+    EllipsoidSemiAxes,
+    KinematicCalibration,
+    MarkerPosition,
+    scapulothoracic_angles,
+)
 from studies.shoulder_calibration import (
     PARAMETER_PRIOR,
     contact_point_cloud,
@@ -63,6 +70,7 @@ ELLIPSOID_LABELS = {"tangent": "tangent ellipsoid", "point": "one-point ellipsoi
 MODEL_COLORS = {"tangent": "tab:red", "point": "tab:purple"}
 ELLIPSOID_COLORS = {"tangent": ELLIPSOID_RGBA, "point": (150, 70, 200, 90)}  # rerun overlay colors
 MARKER_SET = "anatomical"  # one marker set for the whole study (baseline + calibration must match)
+
 
 def warm_start_theta(model, markers: np.ndarray) -> tuple:
     """
@@ -86,8 +94,6 @@ def warm_start_theta(model, markers: np.ndarray) -> tuple:
 
 def run_free_baseline():
     """FREE-scapulothoracic baseline IK (frame per frame). Returns ``(model, Qopt, ik)``."""
-    from bionc.bionc_numpy.enums import InitialGuessModeType
-
     baseline = build_model_free(DATA, marker_set=MARKER_SET)
     q_init = first_frame_guess(DATA, marker_set=MARKER_SET)
     ik, Qopt = run_ik(
@@ -133,7 +139,9 @@ def calibrate(ellipsoid_model: str, base_model, markers: np.ndarray, marker_set:
 
     print(f"[{ellipsoid_model}] success={out['success']}")
     print(f"[{ellipsoid_model}] semi-axes [mm]     = {np.array2string(out['semi_axes'] * 1000, precision=1)}")
-    print(f"[{ellipsoid_model}] centre (segment mm)= {np.array2string(out['ellipsoid_center_scs'] * 1000, precision=1)}")
+    print(
+        f"[{ellipsoid_model}] centre (segment mm)= {np.array2string(out['ellipsoid_center_scs'] * 1000, precision=1)}"
+    )
     print(f"[{ellipsoid_model}] marker RMSE        = {out['marker_rmse_mm']:.2f} mm")
     print(f"[{ellipsoid_model}] max joint residual = {np.max(out['max_joint_residual_per_frame']):.3e}")
     print(f"[{ellipsoid_model}] parameters at bounds = {out['parameters_at_bounds'] or 'none'}")
@@ -220,12 +228,22 @@ def main():
     # --- scapulothoracic angle curves (all in the YXZ basis) ---
     labels = ["First (Y)", "Second (X)", "last (Z)"]
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), constrained_layout=True)
-    fig.suptitle("Scapulothoracic angles: before optim vs FREE baseline vs calibrated ellipsoid(s)", fontsize=14, fontweight="bold")
+    fig.suptitle(
+        "Scapulothoracic angles: before optim vs FREE baseline vs calibrated ellipsoid(s)",
+        fontsize=14,
+        fontweight="bold",
+    )
     for i, axis in enumerate(axes):
         axis.plot(time, before_angles[i], color="black", lw=1.5, ls="--", label="before optim (raw markers)")
         axis.plot(time, baseline_angles[i], color="tab:gray", lw=2, label="FREE baseline")
         for model in ELLIPSOID_MODELS:
-            axis.plot(time, results[model]["out"]["scapulothoracic_angles_deg"][i], color=MODEL_COLORS[model], lw=2, label=ELLIPSOID_LABELS[model])
+            axis.plot(
+                time,
+                results[model]["out"]["scapulothoracic_angles_deg"][i],
+                color=MODEL_COLORS[model],
+                lw=2,
+                label=ELLIPSOID_LABELS[model],
+            )
         axis.set_title(labels[i])
         axis.set_xlabel("Normalized time")
         axis.grid(True, alpha=0.25)

@@ -522,7 +522,10 @@ class KinematicCalibration:
         ubx = np.concatenate([np.full(self._nb_Q, np.inf), self._p_ub])
 
         solver = nlpsol(
-            "kinematic_calibration", "ipopt", self._nlp, options if options is not None else self.default_options(verbose)
+            "kinematic_calibration",
+            "ipopt",
+            self._nlp,
+            options if options is not None else self.default_options(verbose),
         )
         result = solver(x0=x0, lbx=lbx, ubx=ubx, lbg=self._lbg, ubg=self._ubg)
 

@@ -419,8 +419,17 @@ class _Session:
     verbose: bool
 
     @classmethod
-    def build(cls, train_paths, *, frames_per_trial, marker_set, parameter_prior, ellipsoid_joint,
-              calibrate_orientation, verbose) -> "_Session":
+    def build(
+        cls,
+        train_paths,
+        *,
+        frames_per_trial,
+        marker_set,
+        parameter_prior,
+        ellipsoid_joint,
+        calibrate_orientation,
+        verbose,
+    ) -> "_Session":
         train_paths = [str(path) for path in train_paths]
         data = MultiC3dData(train_paths)
         base = build_model_constrained(data, marker_set=marker_set)

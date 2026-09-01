@@ -34,10 +34,10 @@ conda env update -f environment.yml --prune
 
 ### 3. Install bioNC from source
 
-This repository expects the local source tree to be used directly.
+This repository expects the local `bioNC` source tree to be used directly.
 
 ```bash
-pip install -e .
+pip install -e ../bioNC
 ```
 or directly from the repo:
 ```bash
@@ -46,13 +46,26 @@ pip install -e git+https://github.com/Ipuch/bioNC.git#egg=bionc
 
 Editable installation is the safest option while developing because changes in the source tree are immediately reflected without reinstalling.
 
-### 4. Verify the installation
+### 4. Install this repository
+
+`examples` and `studies` are packages, so installing them once is what lets every script and test
+import them by name from anywhere:
+
+```bash
+pip install -e . --no-deps
+```
+
+`--no-deps` leaves the conda environment's dependency set alone — `environment.yml` already
+provides it. Add `[dev]` instead of `--no-deps` to also pull in `pytest`.
+
+### 5. Verify the installation
 
 ```bash
 python -c "import bionc; print(bionc.__version__)"
+python -c "import studies.shoulder_calibration; print('examples + studies importable')"
 ```
 
-If the import succeeds, the environment is ready.
+If both imports succeed, the environment is ready.
 
 ## Environment Notes
 
@@ -89,6 +102,9 @@ Some scripts open visualisation windows, so run them from a graphical session.
 > `bionc` is not installed into the conda environment on this machine; it resolves through the
 > sibling source tree. Either run with `PYTHONPATH=$HOME/ProjetsPython/bioNC`, or once and for all:
 > `conda activate bionc && pip install -e ../bioNC`.
+>
+> This repository itself must be installed too (`pip install -e . --no-deps`, step 4 above) — that
+> is what makes `from studies.… import …` and `from examples.… import …` resolve.
 
 ## Why source installation
 

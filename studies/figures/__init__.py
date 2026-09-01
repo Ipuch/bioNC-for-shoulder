@@ -17,11 +17,7 @@ Pass ``--save`` to write PNGs into ``results/figures/`` instead of opening windo
 """
 
 import argparse
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root on the path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # studies/ on the path
 
 import matplotlib.pyplot as plt
 
@@ -30,7 +26,13 @@ FIGURE_DIR = RESULTS_DIR / "figures"
 
 # one colour per trial family, used everywhere so the two protocols stay recognisable across figures
 KIND_COLORS = {"ANALYTIC": "tab:red", "FUNCTIONAL": "tab:blue"}
-STEP_COLORS = {"free": "tab:gray", "reference": "tab:blue", "step1": "tab:purple", "step2": "tab:green", "step3": "tab:red"}
+STEP_COLORS = {
+    "free": "tab:gray",
+    "reference": "tab:blue",
+    "step1": "tab:purple",
+    "step2": "tab:green",
+    "step3": "tab:red",
+}
 
 
 def parse_args(description: str, refresh: bool = False) -> argparse.Namespace:

@@ -4,6 +4,10 @@ import numpy as np
 
 from examples._shared.ik import load_markers
 
+# Default rerun overlay colour for a calibrated ellipsoid: translucent surface, opaque contact
+# point. Studies that draw more than one ellipsoid vary the hue from here.
+ELLIPSOID_RGBA = (220, 70, 70, 90)
+
 
 def named_bionc_model(model, display_name: str, options=None):
     """

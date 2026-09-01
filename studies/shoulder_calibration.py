@@ -27,11 +27,9 @@ Run (from the repo root, inside the ``bionc`` conda env):
     python studies/shoulder_calibration.py
 """
 
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root on the path
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -39,7 +37,7 @@ from scipy.optimize import least_squares
 from bionc import NaturalCoordinates
 
 from examples._shared.c3d_data import MultiC3dData, load_markers_multi, select_calibration_frames
-from examples._shared.frames import segment_transformation_matrix
+from examples._shared.frames import rodrigues_matrix, segment_transformation_matrix
 from examples.clinical.model import (
     GH_GLENOID,
     GH_HEAD,
@@ -49,12 +47,13 @@ from examples.clinical.model import (
     glenohumeral_centres,
     set_glenohumeral_centres,
 )
-from kinematic_calibration import (
+from studies.kinematic_calibration import (
     EllipsoidOrientation,
     EllipsoidSemiAxes,
     JointLength,
     KinematicCalibration,
     MarkerPosition,
+    labels_at_bounds,
 )
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "examples" / "data" / "99007140-40.19107308-20260825"
@@ -90,38 +89,6 @@ def trial_kind(path) -> str:
 
 
 # ----------------------------------------------------------------- ellipsoid warm start
-def contact_point_cloud(model, markers: np.ndarray, Q: np.ndarray = None) -> np.ndarray:
-    """
-    The scapula contact point over every frame, expressed in the THORAX segment coordinate system.
-
-    The contact point is the centroid of the three scapula landmarks (RSAA/RSIA/RSRS, the ISB
-    AA/AI/TS), which is what the one-point ellipsoid joint constrains. Expressing it in the thorax
-    frame turns the trial into a point cloud on the surface to be fitted -- the ellipsoid warm start
-    is then an ordinary surface fit rather than a guess.
-
-    ``Q`` defaults to ``model.Q_from_markers(markers)``; pass an inverse-kinematics solution to place
-    the cloud with a reconstruction that enforced the model's constraints.
-
-    Returns ``(3, nb_frames)`` in metres.
-    """
-    Q = np.asarray(model.Q_from_markers(markers) if Q is None else Q)
-    thorax = model.segments["THORAX"]
-    M = segment_transformation_matrix(model, "THORAX")
-    names = list(model.marker_names_technical)
-    landmarks = [names.index(name) for name in SCAPULA_LANDMARKS]
-
-    cloud = np.zeros((3, Q.shape[1]))
-    for frame in range(Q.shape[1]):
-        Q_thorax = NaturalCoordinates(Q[:, frame]).vector(thorax.index)
-        rp = np.asarray(Q_thorax.rp, dtype=float).reshape(3)
-        uvw = np.column_stack(
-            [np.asarray(Q_thorax.u).reshape(3), np.asarray(Q_thorax.v).reshape(3), np.asarray(Q_thorax.w).reshape(3)]
-        )
-        contact = markers[:3, landmarks, frame].mean(axis=1)
-        cloud[:, frame] = M @ np.linalg.inv(uvw) @ (contact - rp)
-    return cloud
-
-
 def to_segment_frame(model, Q: np.ndarray, points_global: np.ndarray, segment: str = "THORAX") -> np.ndarray:
     """
     Express a global trajectory ``(3, nb_frames)`` in a segment's own coordinate system, per frame.
@@ -129,6 +96,9 @@ def to_segment_frame(model, Q: np.ndarray, points_global: np.ndarray, segment: s
     The inverse of the convention ``add_natural_marker_from_segment_coordinates`` uses:
     ``L = M @ inv([u, v, w]) @ (P - rp)`` with ``M`` from
     :func:`~examples._shared.frames.segment_transformation_matrix`.
+
+    This is the one place that conversion is written; everything that needs a global point in a
+    segment frame goes through here.
     """
     Q = np.asarray(Q)
     segment_object = model.segments[segment]
@@ -145,20 +115,36 @@ def to_segment_frame(model, Q: np.ndarray, points_global: np.ndarray, segment: s
                 np.asarray(Q_segment.w).reshape(3),
             ]
         )
-        local[:, frame] = M @ np.linalg.inv(uvw) @ (points_global[:, frame] - rp)
+        local[:, frame] = M @ np.linalg.solve(uvw, points_global[:, frame] - rp)
     return local
 
 
-def _rodrigues(vector: np.ndarray) -> np.ndarray:
-    angle = float(np.linalg.norm(vector))
-    if angle < 1e-12:
-        return np.eye(3)
-    axis = vector / angle
-    K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
-    return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+def _marker_indices(model, names) -> list[int]:
+    """Positions of ``names`` within ``model.marker_names_technical``."""
+    technical = list(model.marker_names_technical)
+    return [technical.index(name) for name in names]
 
 
-def thorax_reference(model, markers: np.ndarray) -> dict:
+def contact_point_cloud(model, markers: np.ndarray, Q: np.ndarray = None) -> np.ndarray:
+    """
+    The scapula contact point over every frame, expressed in the THORAX segment coordinate system.
+
+    The contact point is the centroid of the three scapula landmarks (RSAA/RSIA/RSRS, the ISB
+    AA/AI/TS), which is what the one-point ellipsoid joint constrains. Expressing it in the thorax
+    frame turns the trial into a point cloud on the surface to be fitted -- the ellipsoid warm start
+    is then an ordinary surface fit rather than a guess.
+
+    ``Q`` defaults to ``model.Q_from_markers(markers)``; pass an inverse-kinematics solution to place
+    the cloud with a reconstruction that enforced the model's constraints.
+
+    Returns ``(3, nb_frames)`` in metres.
+    """
+    Q = np.asarray(model.Q_from_markers(markers) if Q is None else Q)
+    contacts = markers[:3, _marker_indices(model, SCAPULA_LANDMARKS), :].mean(axis=1)
+    return to_segment_frame(model, Q, contacts, segment="THORAX")
+
+
+def thorax_reference(model, markers: np.ndarray, nb_frames_sampled: int = 40) -> dict:
     """
     A subject-sized box for the thoracic ellipsoid, from the four thorax landmarks themselves.
 
@@ -170,25 +156,21 @@ def thorax_reference(model, markers: np.ndarray) -> dict:
     subject's anatomy rather than magic numbers -- and, crucially, the calibration reports which
     parameters end up riding those bounds.
 
+    The landmarks barely move in the thorax frame, so ``nb_frames_sampled`` frames spread over the
+    trial are enough to size the box; the rest would only repeat them.
+
     Returns ``{"center": (3,), "scale": float}`` in metres.
     """
     Q = np.asarray(model.Q_from_markers(markers))
-    thorax = model.segments["THORAX"]
-    M = segment_transformation_matrix(model, "THORAX")
-    names = list(model.marker_names_technical)
-    landmarks = [names.index(name) for name in THORAX_LANDMARKS]
+    stride = max(1, Q.shape[1] // nb_frames_sampled)
+    Q_sampled = Q[:, ::stride]
 
-    points = []
-    for frame in range(0, Q.shape[1], max(1, Q.shape[1] // 40)):
-        Q_thorax = NaturalCoordinates(Q[:, frame]).vector(thorax.index)
-        rp = np.asarray(Q_thorax.rp, dtype=float).reshape(3)
-        uvw = np.column_stack(
-            [np.asarray(Q_thorax.u).reshape(3), np.asarray(Q_thorax.v).reshape(3), np.asarray(Q_thorax.w).reshape(3)]
-        )
-        for landmark in landmarks:
-            points.append(M @ np.linalg.inv(uvw) @ (markers[:3, landmark, frame] - rp))
-
-    points = np.array(points).T
+    points = np.hstack(
+        [
+            to_segment_frame(model, Q_sampled, markers[:3, landmark, ::stride], segment="THORAX")
+            for landmark in _marker_indices(model, THORAX_LANDMARKS)
+        ]
+    )
     return dict(
         center=(points.max(axis=1) + points.min(axis=1)) / 2,
         scale=float(((points.max(axis=1) - points.min(axis=1)) / 2).max()),
@@ -219,9 +201,16 @@ def fit_ellipsoid(
     So the ellipsoid form is imposed from the start, the residual is the *radial surface distance*
     (metres, comparable across sizes), and the unknowns are boxed by :func:`ellipsoid_bounds`.
 
-    Returns ``{"semi_axes", "center", "rotation", "residual_mm", "at_bounds"}``: lengths in metres,
-    the centre in thorax segment coordinates, ``rotation`` a 3x3 whose columns are the principal
-    axes, and the names of the unknowns that ended on a bound.
+    Returns ``{"semi_axes", "center", "rotation", "residual_mm", "prior_pull_mm", "at_bounds"}``:
+    lengths in metres, the centre in thorax segment coordinates, ``rotation`` a 3x3 whose columns
+    are the principal axes, and the names of the unknowns that ended on a bound.
+
+    ``residual_mm`` is the RMS *surface* distance and nothing else. The ridge terms are part of the
+    minimised vector but not of that number: they are not distances, and with ``prior_scale`` of
+    order ``sqrt(prior * nb_points)`` they can outweigh the surface block entirely, which would
+    quietly inflate the one figure this study asks the reader to compare against a 5.1 mm noise
+    floor. How hard the ridge is pulling is reported separately as ``prior_pull_mm``, the RMS
+    deviation of the semi-axes from the subject's thorax scale.
     """
     bounds = bounds or ellipsoid_bounds(reference)
     semi_low, semi_high = bounds["semi_axes"]
@@ -241,22 +230,22 @@ def fit_ellipsoid(
 
     def residual(parameters):
         semi_axes, center, rotation_vector = parameters[:3], parameters[3:6], parameters[6:]
-        surface = ellipsoid_surface_distance_mm(cloud, semi_axes, center, _rodrigues(rotation_vector)) / 1000
+        surface = ellipsoid_surface_distance_mm(cloud, semi_axes, center, rodrigues_matrix(rotation_vector)) / 1000
         return np.concatenate([surface, prior_scale * (semi_axes - reference["scale"])])
 
     solution = least_squares(residual, start, bounds=(lower, upper))
     semi_axes, center, rotation_vector = solution.x[:3], solution.x[3:6], solution.x[6:]
 
-    width = np.maximum(upper - lower, 1e-12)
-    margin = np.minimum(solution.x - lower, upper - solution.x) / width
     labels = ["a", "b", "c", "cx", "cy", "cz", "rx", "ry", "rz"]
-    at_bounds = [label for label, close, free in zip(labels, margin <= 0.01, width > 1e-6) if close and free]
+    at_bounds = labels_at_bounds(solution.x, lower, upper, labels)
 
+    surface_mm = solution.fun[: cloud.shape[1]] * 1000  # the ridge block is deliberately excluded
     return dict(
         semi_axes=semi_axes,
         center=center,
-        rotation=_rodrigues(rotation_vector),
-        residual_mm=float(np.sqrt(np.mean(residual(solution.x) ** 2)) * 1000),
+        rotation=rodrigues_matrix(rotation_vector),
+        residual_mm=float(np.sqrt(np.mean(surface_mm**2))),
+        prior_pull_mm=float(np.sqrt(np.mean((semi_axes - reference["scale"]) ** 2)) * 1000),
         at_bounds=at_bounds,
     )
 
@@ -278,29 +267,54 @@ def ellipsoid_surface_distance_mm(cloud: np.ndarray, semi_axes, center, rotation
 
 # ----------------------------------------------------------------------------- the pipeline
 @dataclass
+class CalibrationStep:
+    """
+    One solved calibration step: the model it produced, its reconstruction, its diagnostics.
+
+    ``sol`` is :meth:`~studies.kinematic_calibration.KinematicCalibration.sol`'s dict; it stays a
+    dict because it is also what the leave-one-out folds serialise into ``.npz``. The remaining
+    fields are step-specific and stay ``None`` where they do not apply: step 1 carries the ellipsoid
+    warm start it was seeded from and the cloud it was fitted to, steps 2 and 3 the glenohumeral
+    centres they solved for.
+    """
+
+    model: object
+    Qopt: np.ndarray
+    sol: dict
+    centres: dict = None
+    warm_start: dict = None
+    reference: dict = None
+    bounds: dict = None
+    cloud: np.ndarray = None
+
+
+@dataclass
 class CalibrationResult:
     """Everything the three steps produced, plus the final calibrated model."""
 
     train_paths: list[str]
     frames: dict[str, np.ndarray]
-    step1: dict = field(default_factory=dict)
-    step2: dict = field(default_factory=dict)
-    step3: dict = field(default_factory=dict)
+    step1: CalibrationStep = None
+    step2: CalibrationStep = None
+    step3: CalibrationStep = None
     model: object = None
+
+    @property
+    def steps(self) -> dict[str, CalibrationStep]:
+        return {"step1": self.step1, "step2": self.step2, "step3": self.step3}
 
     @property
     def parameters(self) -> dict[str, float]:
         """The final (step-3) calibrated parameters, ``{label: value}``."""
-        return self.step3["sol"]["parameters"]
+        return self.step3.sol["parameters"]
 
     def summary(self) -> str:
         lines = [f"calibrated on {len(self.train_paths)} trials, {sum(len(f) for f in self.frames.values())} frames"]
-        for step in ("step1", "step2", "step3"):
-            sol = getattr(self, step)["sol"]
-            at_bounds = sol["parameters_at_bounds"]
+        for name, step in self.steps.items():
+            at_bounds = step.sol["parameters_at_bounds"]
             lines.append(
-                f"  {step}: success={sol['success']}  RMSE={sol['marker_rmse_mm']:.2f} mm"
-                f"  max joint residual={np.max(sol['max_joint_residual_per_frame']):.2e}"
+                f"  {name}: success={step.sol['success']}  RMSE={step.sol['marker_rmse_mm']:.2f} mm"
+                f"  max joint residual={np.max(step.sol['max_joint_residual_per_frame']):.2e}"
                 + (f"  AT BOUNDS: {', '.join(at_bounds)}" if at_bounds else "")
             )
         for label, value in self.parameters.items():
@@ -354,6 +368,7 @@ def _ellipsoid_parameters(calibrate_orientation: bool, bounds: dict, reference: 
             half_range=bounds["center_half_range"],
             box_center=reference["center"],  # "inside the thorax", not "near the previous answer"
             prior=1.0,
+            report_as="ellipsoid_center",
         ),
     ]
     if calibrate_orientation:
@@ -381,11 +396,141 @@ def _joint_parameters():
     ]
 
 
-def _run(model, markers, parameters, Q_init=None, verbose: bool = True, **kwargs) -> tuple:
-    options = None if verbose else {**KinematicCalibration._default_options(), "ipopt.print_level": 0, "print_time": False}
-    calibration = KinematicCalibration(model, markers, parameters=parameters, **kwargs)
-    Qopt = calibration.solve(Q_init=Q_init, options=options)
-    return calibration, Qopt, calibration.sol()
+def _solve_step(model, markers, parameters, *, regularization, Q_init=None, verbose=True, **extras) -> CalibrationStep:
+    """Run one all-frames calibration, write the answer into ``model``, and package the result."""
+    calibration = KinematicCalibration(model, markers, parameters=parameters, regularization=regularization)
+    Qopt = calibration.solve(Q_init=Q_init, verbose=verbose)
+    step = CalibrationStep(model=model, Qopt=Qopt, sol=calibration.sol(), **extras)
+    calibration.apply_to(model)
+    return step
+
+
+@dataclass
+class _Session:
+    """What all three steps share: the pooled trials, the frames, and the ridge weight."""
+
+    train_paths: list[str]
+    data: MultiC3dData
+    frames: dict
+    marker_set: str
+    regularization: float
+    ellipsoid_joint: str
+    calibrate_orientation: bool
+    verbose: bool
+
+    @classmethod
+    def build(
+        cls,
+        train_paths,
+        *,
+        frames_per_trial,
+        marker_set,
+        parameter_prior,
+        ellipsoid_joint,
+        calibrate_orientation,
+        verbose,
+    ) -> "_Session":
+        train_paths = [str(path) for path in train_paths]
+        data = MultiC3dData(train_paths)
+        base = build_model_constrained(data, marker_set=marker_set)
+        frames = select_calibration_frames(base, train_paths, per_trial=frames_per_trial)
+        return cls(
+            train_paths=train_paths,
+            data=data,
+            frames=frames,
+            marker_set=marker_set,
+            # the marker objective grows with the frame count, so the ridge has to as well
+            regularization=parameter_prior * sum(len(index) for index in frames.values()),
+            ellipsoid_joint=ellipsoid_joint,
+            calibrate_orientation=calibrate_orientation,
+            verbose=verbose,
+        )
+
+    def markers_for(self, model) -> np.ndarray:
+        """The calibration frames, as this model's technical markers."""
+        return load_markers_multi(model, self.train_paths, self.frames)
+
+    def base_model(self):
+        return build_model_constrained(self.data, marker_set=self.marker_set)
+
+
+def _calibrate_ellipsoid(session: _Session) -> CalibrationStep:
+    """
+    Step 1 -- the ellipsoid, on a thorax + scapula chain that has nothing else to hide behind.
+
+    With no clavicle and no humerus, the one-point scapulothoracic joint is the only thing holding
+    the two segments together, so the contact-point residual has nowhere else to go.
+    """
+    base = session.base_model()
+    base_markers = session.markers_for(base)
+
+    cloud = contact_point_cloud(base, base_markers)
+    reference = thorax_reference(base, base_markers)
+    bounds = ellipsoid_bounds(reference)
+    warm_start = fit_ellipsoid(cloud, reference, with_orientation=session.calibrate_orientation, bounds=bounds)
+
+    model = build_scapulothoracic_ellipsoid_model(
+        session.data,
+        (*warm_start["semi_axes"], *warm_start["center"]),
+        joint=session.ellipsoid_joint,
+        rotation=warm_start["rotation"],
+        marker_set=session.marker_set,
+        clavicle_constraint=False,
+        include_humerus=False,
+    )
+    return _solve_step(
+        model,
+        session.markers_for(model),
+        _ellipsoid_parameters(session.calibrate_orientation, bounds, reference),
+        regularization=session.regularization,
+        verbose=session.verbose,
+        warm_start=warm_start,
+        reference=reference,
+        bounds=bounds,
+        cloud=cloud,
+    )
+
+
+def _calibrate_joint_centres(session: _Session) -> CalibrationStep:
+    """Step 2 -- clavicle length and the two glenohumeral centres, scapulothoracic left free."""
+    model = add_glenohumeral_centres(session.base_model())
+    step = _solve_step(
+        model,
+        session.markers_for(model),
+        _joint_parameters(),
+        regularization=session.regularization,
+        verbose=session.verbose,
+    )
+    step.centres = glenohumeral_centres(model)
+    return step
+
+
+def _close_the_loop(session: _Session, step1: CalibrationStep, step2: CalibrationStep) -> CalibrationStep:
+    """Step 3 -- everything at once, warm-started from the two halves that were solved apart."""
+    rotation = step1.sol.get(
+        "ellipsoid_axes_scs", step1.warm_start["rotation"] if session.calibrate_orientation else None
+    )
+    model = build_scapulothoracic_ellipsoid_model(
+        session.data,
+        (*step1.sol["semi_axes"], *step1.sol["ellipsoid_center_scs"]),
+        joint=session.ellipsoid_joint,
+        rotation=rotation,
+        marker_set=session.marker_set,
+        calibratable_gh_centres=True,
+    )
+    set_glenohumeral_centres(model, glenoid_scs=step2.centres["glenoid"], head_scs=step2.centres["head"])
+    model.joints["Clavicle"].length = float(step2.sol["parameters"]["Clavicle.length"])
+
+    step = _solve_step(
+        model,
+        session.markers_for(model),
+        _ellipsoid_parameters(session.calibrate_orientation, step1.bounds, step1.reference) + _joint_parameters(),
+        regularization=session.regularization,
+        Q_init=step2.Qopt,
+        verbose=session.verbose,
+    )
+    step.centres = glenohumeral_centres(model)
+    return step
 
 
 def calibrate(
@@ -405,84 +550,23 @@ def calibrate(
     only*, so the segment geometry and the data-driven joint lengths are trained on the same set as
     the calibrated parameters -- what a held-out evaluation needs to stay honest.
     """
-    train_paths = [str(path) for path in train_paths]
-    data = MultiC3dData(train_paths)
-
-    base = build_model_constrained(data, marker_set=marker_set)
-    frames = select_calibration_frames(base, train_paths, per_trial=frames_per_trial)
-    result = CalibrationResult(train_paths=train_paths, frames=frames)
-
-    # the marker objective grows with the frame count, so the ridge has to as well
-    regularization = parameter_prior * sum(len(index) for index in frames.values())
-
-    # --- step 1: the ellipsoid, on a thorax + scapula chain that has nothing else to hide behind
-    base_markers = load_markers_multi(base, train_paths, frames)
-    cloud = contact_point_cloud(base, base_markers)
-    reference = thorax_reference(base, base_markers)
-    bounds = ellipsoid_bounds(reference)
-    warm_start = fit_ellipsoid(cloud, reference, with_orientation=calibrate_orientation, bounds=bounds)
-    theta0 = (*warm_start["semi_axes"], *warm_start["center"])
-    model1 = build_scapulothoracic_ellipsoid_model(
-        data,
-        theta0,
-        joint=ellipsoid_joint,
-        rotation=warm_start["rotation"],
+    session = _Session.build(
+        train_paths,
+        frames_per_trial=frames_per_trial,
         marker_set=marker_set,
-        clavicle_constraint=False,
-        include_humerus=False,
-    )
-    markers1 = load_markers_multi(model1, train_paths, frames)
-    calibration1, Qopt1, sol1 = _run(
-        model1,
-        markers1,
-        _ellipsoid_parameters(calibrate_orientation, bounds, reference),
-        regularization=regularization,
+        parameter_prior=parameter_prior,
+        ellipsoid_joint=ellipsoid_joint,
+        calibrate_orientation=calibrate_orientation,
         verbose=verbose,
     )
-    calibration1.apply_to(model1)
-    result.step1 = dict(
-        model=model1,
-        Qopt=Qopt1,
-        sol=sol1,
-        warm_start=warm_start,
-        reference=reference,
-        bounds=bounds,
-        cloud=cloud,
-    )
 
-    # --- step 2: clavicle length and the two glenohumeral centres, scapulothoracic left free
-    model2 = add_glenohumeral_centres(build_model_constrained(data, marker_set=marker_set))
-    markers2 = load_markers_multi(model2, train_paths, frames)
-    calibration2, Qopt2, sol2 = _run(model2, markers2, _joint_parameters(), regularization=regularization, verbose=verbose)
-    calibration2.apply_to(model2)
-    result.step2 = dict(model=model2, Qopt=Qopt2, sol=sol2, centres=glenohumeral_centres(model2))
+    step1 = _calibrate_ellipsoid(session)
+    step2 = _calibrate_joint_centres(session)
+    step3 = _close_the_loop(session, step1, step2)
 
-    # --- step 3: the closed loop, warm-started from both halves
-    model3 = build_scapulothoracic_ellipsoid_model(
-        data,
-        (*sol1["semi_axes"], *sol1["ellipsoid_center_scs"]),
-        joint=ellipsoid_joint,
-        rotation=sol1.get("ellipsoid_axes_scs", warm_start["rotation"] if calibrate_orientation else None),
-        marker_set=marker_set,
-        calibratable_gh_centres=True,
+    return CalibrationResult(
+        train_paths=session.train_paths, frames=session.frames, step1=step1, step2=step2, step3=step3, model=step3.model
     )
-    centres = result.step2["centres"]
-    set_glenohumeral_centres(model3, glenoid_scs=centres["glenoid"], head_scs=centres["head"])
-    model3.joints["Clavicle"].length = float(sol2["parameters"]["Clavicle.length"])
-
-    markers3 = load_markers_multi(model3, train_paths, frames)
-    calibration3, Qopt3, sol3 = _run(
-        model3,
-        markers3,
-        _ellipsoid_parameters(calibrate_orientation, bounds, reference) + _joint_parameters(),
-        Q_init=Qopt2,
-        regularization=regularization,
-        verbose=verbose,
-    )
-    calibration3.apply_to(model3)
-    result.step3 = dict(model=model3, Qopt=Qopt3, sol=sol3, centres=glenohumeral_centres(model3))
-    result.model = model3
-    return result
 
 
 def main():

@@ -13,10 +13,8 @@ Run (from the repo root, inside the ``bionc`` conda env):
     python studies/marker_set_comparison.py
 """
 
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root on the path
 
 import matplotlib.pyplot as plt
 import numpy as np

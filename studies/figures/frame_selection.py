@@ -22,53 +22,49 @@ Run:
     python studies/figures/frame_selection.py [--save]
 """
 
-import sys
-from pathlib import Path
-
-# Work both as `python studies/figures/<name>.py` and as `python -m studies.figures.<name>`: the
-# plain-script form puts only this directory on sys.path and leaves the package unset, so the repo
-# root and studies/ have to be added before any project import, and __package__ set for `from .`.
-_REPO = Path(__file__).resolve().parents[2]
-for _path in (str(_REPO), str(_REPO / "studies")):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
-if __package__ in (None, ""):
-    __package__ = "studies.figures"
-
 import numpy as np
 from matplotlib import pyplot as plt
 
 from examples._shared.c3d_data import (
+    COARSE_STRIDE,
     MultiC3dData,
     farthest_point_sample,
     load_markers_multi,
-    posture_features,
+    posture_scan,
     select_calibration_frames,
 )
 from examples._shared.ik import load_markers
 from examples.clinical.model import build_model_constrained
-from shoulder_calibration import FRAMES_PER_TRIAL, MARKER_SET, contact_point_cloud, trial_kind, trial_label, trials
+from studies.shoulder_calibration import (
+    FRAMES_PER_TRIAL,
+    MARKER_SET,
+    contact_point_cloud,
+    trial_kind,
+    trial_label,
+    trials,
+)
+from studies.figures import KIND_COLORS, finish, parse_args
 
-from . import KIND_COLORS, finish, parse_args
-
-COARSE_STRIDE = 10  # the stride select_calibration_frames scans on; the candidate set
 ANGLE_LABELS = ["ST Y", "ST X", "ST Z", "GH Y1", "GH X", "GH Y2"]
 
 
 def gather(paths, per_trial: int = FRAMES_PER_TRIAL) -> dict:
     """Candidate and selected posture features per trial, plus the pooled contact-point clouds."""
     model = build_model_constrained(MultiC3dData(paths), marker_set=MARKER_SET)
-    selection = select_calibration_frames(model, paths, per_trial=per_trial, coarse_stride=COARSE_STRIDE)
 
-    per_trial_data = {}
-    for path in paths:
-        markers = load_markers(model, path, stride=COARSE_STRIDE)
-        candidates = np.arange(markers.shape[2]) * COARSE_STRIDE
-        per_trial_data[path] = dict(
-            features=posture_features(model, markers),
-            candidates=candidates,
-            picked=np.searchsorted(candidates, selection[str(path)]),
+    # one scan, shared with the selection: this figure has to draw the candidate set the
+    # calibration actually chose from, not an independently recomputed lookalike
+    scan = posture_scan(model, paths)
+    selection = select_calibration_frames(model, paths, per_trial=per_trial, scan=scan)
+
+    per_trial_data = {
+        path: dict(
+            features=scan[str(path)]["features"],
+            candidates=scan[str(path)]["candidates"],
+            picked=np.searchsorted(scan[str(path)]["candidates"], selection[str(path)]),
         )
+        for path in paths
+    }
 
     candidate_markers = np.concatenate([load_markers(model, path, stride=COARSE_STRIDE) for path in paths], axis=2)
     return dict(
@@ -102,15 +98,21 @@ def plot_latent_space(data: dict):
     scores = centred @ components[:2].T
     explained = singular**2 / np.sum(singular**2)
 
-    figure, (axis, axis_scree) = plt.subplots(1, 2, figsize=(13, 5.5), constrained_layout=True,
-                                              gridspec_kw={"width_ratios": [2, 1]})
+    figure, (axis, axis_scree) = plt.subplots(
+        1, 2, figsize=(13, 5.5), constrained_layout=True, gridspec_kw={"width_ratios": [2, 1]}
+    )
     figure.suptitle("Posture latent space: what the calibration frames actually sample", fontsize=14, fontweight="bold")
 
     for kind, color in KIND_COLORS.items():
         mask = np.array([trial_kind(path) == kind for path in trial_of])
         axis.scatter(scores[mask, 0], scores[mask, 1], s=6, color=color, alpha=0.16, label=f"{kind} (all frames)")
     axis.scatter(
-        scores[selected, 0], scores[selected, 1], s=42, facecolor="none", edgecolor="black", lw=1.1,
+        scores[selected, 0],
+        scores[selected, 1],
+        s=42,
+        facecolor="none",
+        edgecolor="black",
+        lw=1.1,
         label="selected for calibration",
     )
     axis.set_xlabel(f"PC1 ({explained[0]:.0%} of the posture variance)")
@@ -147,9 +149,7 @@ def plot_coverage_curve(data: dict, budgets=(5, 10, 15, 20, 25, 30, 35, 45, 60, 
     for path in data["paths"]:
         features = data["per_trial"][path]["features"]
         farthest = [coverage(features, farthest_point_sample(features, budget)) for budget in budgets]
-        uniform = [
-            coverage(features, np.linspace(0, features.shape[0] - 1, budget).astype(int)) for budget in budgets
-        ]
+        uniform = [coverage(features, np.linspace(0, features.shape[0] - 1, budget).astype(int)) for budget in budgets]
         color = KIND_COLORS[trial_kind(path)]
         axis.plot(budgets, farthest, "-", color=color, alpha=0.85, lw=1.6)
         axis.plot(budgets, uniform, ":", color=color, alpha=0.6, lw=1.4)
@@ -157,8 +157,13 @@ def plot_coverage_curve(data: dict, budgets=(5, 10, 15, 20, 25, 30, 35, 45, 60, 
         uniform_all.append(uniform)
 
     axis.axvline(FRAMES_PER_TRIAL, color="black", ls="--", lw=1)
-    axis.annotate(f"budget in use\n({FRAMES_PER_TRIAL}/trial)", (FRAMES_PER_TRIAL, axis.get_ylim()[1]),
-                  textcoords="offset points", xytext=(6, -28), fontsize=9)
+    axis.annotate(
+        f"budget in use\n({FRAMES_PER_TRIAL}/trial)",
+        (FRAMES_PER_TRIAL, axis.get_ylim()[1]),
+        textcoords="offset points",
+        xytext=(6, -28),
+        fontsize=9,
+    )
     axis.set_xlabel("frames selected per trial")
     axis.set_ylabel("coverage radius (standardised posture units)")
     axis.set_title("solid = farthest-point, dotted = uniform stride")
@@ -226,9 +231,7 @@ def plot_contact_patch(data: dict):
 
     for axis, (first, second, xlabel, ylabel) in zip(axes, planes):
         axis.scatter(all_cloud[first], all_cloud[second], s=5, color="tab:gray", alpha=0.25, label="all frames")
-        axis.scatter(
-            selected_cloud[first], selected_cloud[second], s=26, color="tab:red", alpha=0.85, label="selected"
-        )
+        axis.scatter(selected_cloud[first], selected_cloud[second], s=26, color="tab:red", alpha=0.85, label="selected")
         axis.set_xlabel(f"{xlabel} (mm)")
         axis.set_ylabel(f"{ylabel} (mm)")
         axis.set_aspect("equal", adjustable="datalim")

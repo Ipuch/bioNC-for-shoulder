@@ -22,19 +22,6 @@ Run:
     python studies/figures/calibration_steps.py [--save] [--refresh]
 """
 
-import sys
-from pathlib import Path
-
-# Work both as `python studies/figures/<name>.py` and as `python -m studies.figures.<name>`: the
-# plain-script form puts only this directory on sys.path and leaves the package unset, so the repo
-# root and studies/ have to be added before any project import, and __package__ set for `from .`.
-_REPO = Path(__file__).resolve().parents[2]
-for _path in (str(_REPO), str(_REPO / "studies")):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
-if __package__ in (None, ""):
-    __package__ = "studies.figures"
-
 import numpy as np
 from matplotlib import pyplot as plt
 
@@ -42,17 +29,17 @@ from bionc import NaturalCoordinates
 
 from examples._shared.c3d_data import MultiC3dData, load_markers_multi, load_named_markers
 from examples._shared.frames import scs_to_natural
+from examples._shared.ik import rmse_mm
 from examples.clinical.model import GH_GLENOID, GH_HEAD, build_model_free
-from shoulder_calibration import (
+from studies.shoulder_calibration import (
     MARKER_SET,
     calibrate,
     ellipsoid_surface_distance_mm,
     to_segment_frame,
     trials,
 )
-from shoulder_calibration_loo import point_in_global
-
-from . import RESULTS_DIR, STEP_COLORS, finish, parse_args
+from studies.shoulder_calibration_loo import point_in_global
+from studies.figures import RESULTS_DIR, STEP_COLORS, finish, parse_args
 
 CACHE = RESULTS_DIR / "calibration" / "steps.npz"
 
@@ -76,43 +63,43 @@ def compute(paths) -> dict:
 
     scapula = result.model.segments["RSCAPULA"]
     humerus = result.model.segments["RHUMERUS"]
-    contact_global = point_in_global(
-        free_model, "RSCAPULA", scapula.marker_from_name("SCAP_CENTROID").position, free_Q
-    )
+    contact_global = point_in_global(free_model, "RSCAPULA", scapula.marker_from_name("SCAP_CENTROID").position, free_Q)
 
     # the clavicle as the data sees it: RCAS is a thorax marker the model does not track
     clavicle_markers = load_named_markers(paths, ("RCAS", "RCAJ"), result.frames)
     clavicle_measured_mm = np.linalg.norm(clavicle_markers[:, 0] - clavicle_markers[:, 1], axis=0) * 1000
 
-    warm = step1["warm_start"]
+    warm = step1.warm_start
     arrays = dict(
-        cloud=step1["cloud"],
+        cloud=step1.cloud,
         cloud_free=to_segment_frame(free_model, free_Q, contact_global, segment="THORAX"),
-        thorax_center=step1["reference"]["center"],
-        thorax_scale=step1["reference"]["scale"],
+        thorax_center=step1.reference["center"],
+        thorax_scale=step1.reference["scale"],
         warm_semi_axes=warm["semi_axes"],
         warm_center=warm["center"],
-        step1_semi_axes=step1["sol"]["semi_axes"],
-        step1_center=step1["sol"]["ellipsoid_center_scs"],
-        step3_semi_axes=step3["sol"]["semi_axes"],
-        step3_center=step3["sol"]["ellipsoid_center_scs"],
-        step1_rmse=step1["sol"]["per_frame_marker_rmse_mm"],
-        step2_rmse=step2["sol"]["per_frame_marker_rmse_mm"],
-        step3_rmse=step3["sol"]["per_frame_marker_rmse_mm"],
-        gap_uncalibrated_mm=gap_mm(scapula.marker_from_name("RGJC").position, humerus.marker_from_name("RGJC").position),
+        step1_semi_axes=step1.sol["semi_axes"],
+        step1_center=step1.sol["ellipsoid_center_scs"],
+        step3_semi_axes=step3.sol["semi_axes"],
+        step3_center=step3.sol["ellipsoid_center_scs"],
+        step1_rmse=step1.sol["per_frame_marker_rmse_mm"],
+        step2_rmse=step2.sol["per_frame_marker_rmse_mm"],
+        step3_rmse=step3.sol["per_frame_marker_rmse_mm"],
+        gap_uncalibrated_mm=gap_mm(
+            scapula.marker_from_name("RGJC").position, humerus.marker_from_name("RGJC").position
+        ),
         gap_calibrated_mm=gap_mm(
-            scs_to_natural(result.model, "RSCAPULA", step3["centres"]["glenoid"]),
-            scs_to_natural(result.model, "RHUMERUS", step3["centres"]["head"]),
+            scs_to_natural(result.model, "RSCAPULA", step3.centres["glenoid"]),
+            scs_to_natural(result.model, "RHUMERUS", step3.centres["head"]),
         ),
         clavicle_measured_mm=clavicle_measured_mm,
-        clavicle_calibrated_mm=np.array([step3["sol"]["parameters"]["Clavicle.length"] * 1000]),
-        clavicle_initial_mm=np.array([step2["sol"]["theta0"][-1] * 1000]),
-        drift_semi_axes=step3["sol"]["semi_axes"] - step1["sol"]["semi_axes"],
-        drift_center=step3["sol"]["ellipsoid_center_scs"] - step1["sol"]["ellipsoid_center_scs"],
-        drift_glenoid=step3["centres"]["glenoid"] - step2["centres"]["glenoid"],
-        drift_head=step3["centres"]["head"] - step2["centres"]["head"],
+        clavicle_calibrated_mm=np.array([step3.sol["parameters"]["Clavicle.length"] * 1000]),
+        clavicle_initial_mm=np.array([step2.sol["theta0"][-1] * 1000]),
+        drift_semi_axes=step3.sol["semi_axes"] - step1.sol["semi_axes"],
+        drift_center=step3.sol["ellipsoid_center_scs"] - step1.sol["ellipsoid_center_scs"],
+        drift_glenoid=step3.centres["glenoid"] - step2.centres["glenoid"],
+        drift_head=step3.centres["head"] - step2.centres["head"],
         drift_clavicle=np.array(
-            [step3["sol"]["parameters"]["Clavicle.length"] - step2["sol"]["parameters"]["Clavicle.length"]]
+            [step3.sol["parameters"]["Clavicle.length"] - step2.sol["parameters"]["Clavicle.length"]]
         ),
     )
     arrays["free_rmse"] = _free_rmse(free_model, free_markers, free_Q)
@@ -126,7 +113,7 @@ def _free_rmse(free_model, markers, Q) -> np.ndarray:
         residual = np.asarray(
             free_model.markers_constraints(markers[:3, :, frame], NaturalCoordinates(Q[:, frame]), only_technical=True)
         ).reshape(3, -1, order="F")
-        per_frame[frame] = np.sqrt(np.mean(np.sum(residual**2, axis=0))) * 1000
+        per_frame[frame] = rmse_mm(np.linalg.norm(residual, axis=0))
     return per_frame
 
 
@@ -186,15 +173,30 @@ def plot_step1(data: dict):
     # step 1: step 1 answers only to the contact point, step 3 has the clavicle and the glenohumeral
     # joint pulling on it too, so the gap between them is the price of closing the loop.
     distances = {
-        "warm start": (ellipsoid_surface_distance_mm(data["cloud"], data["warm_semi_axes"], data["warm_center"]), "tab:gray"),
-        "step 1": (ellipsoid_surface_distance_mm(data["cloud"], data["step1_semi_axes"], data["step1_center"]), STEP_COLORS["step1"]),
-        "step 3": (ellipsoid_surface_distance_mm(data["cloud"], data["step3_semi_axes"], data["step3_center"]), STEP_COLORS["step3"]),
+        "warm start": (
+            ellipsoid_surface_distance_mm(data["cloud"], data["warm_semi_axes"], data["warm_center"]),
+            "tab:gray",
+        ),
+        "step 1": (
+            ellipsoid_surface_distance_mm(data["cloud"], data["step1_semi_axes"], data["step1_center"]),
+            STEP_COLORS["step1"],
+        ),
+        "step 3": (
+            ellipsoid_surface_distance_mm(data["cloud"], data["step3_semi_axes"], data["step3_center"]),
+            STEP_COLORS["step3"],
+        ),
     }
     everything = np.concatenate([values for values, _ in distances.values()])
     bins = np.linspace(everything.min(), everything.max(), 40)
     for label, (values, color) in distances.items():
-        axes[3].hist(values, bins=bins, histtype="step", lw=1.8, color=color,
-                     label=f"{label} — RMS {np.sqrt(np.mean(values**2)):.1f} mm")
+        axes[3].hist(
+            values,
+            bins=bins,
+            histtype="step",
+            lw=1.8,
+            color=color,
+            label=f"{label} — RMS {np.sqrt(np.mean(values**2)):.1f} mm",
+        )
     axes[3].axvline(0, color="black", lw=1)
     axes[3].set_xlabel("signed distance to the surface (mm)")
     axes[3].set_ylabel("frames")
@@ -216,10 +218,16 @@ def plot_step2(data: dict):
 
     uncalibrated, calibrated = data["gap_uncalibrated_mm"], data["gap_calibrated_mm"]
     frames = np.arange(len(uncalibrated))
-    axis_gh.plot(frames, uncalibrated, lw=1, color="tab:blue",
-                 label=f"lab RGJC pair (mean {uncalibrated.mean():.1f} mm)")
-    axis_gh.plot(frames, calibrated, lw=1, color=STEP_COLORS["step2"],
-                 label=f"calibrated centres (mean {calibrated.mean():.1f} mm)")
+    axis_gh.plot(
+        frames, uncalibrated, lw=1, color="tab:blue", label=f"lab RGJC pair (mean {uncalibrated.mean():.1f} mm)"
+    )
+    axis_gh.plot(
+        frames,
+        calibrated,
+        lw=1,
+        color=STEP_COLORS["step2"],
+        label=f"calibrated centres (mean {calibrated.mean():.1f} mm)",
+    )
     axis_gh.set_xlabel("calibration frame")
     axis_gh.set_ylabel("scapula point to humerus point (mm)")
     axis_gh.set_title("the two points a spherical GH must fuse")
@@ -237,10 +245,22 @@ def plot_step2(data: dict):
 
     measured = data["clavicle_measured_mm"]
     warm_start, calibrated_length = float(data["clavicle_initial_mm"][0]), float(data["clavicle_calibrated_mm"][0])
-    axis_clav.hist(measured, bins=35, color="tab:gray", alpha=0.75,
-                   label=f"measured RCAS-RCAJ ({measured.min():.0f}-{measured.max():.0f} mm)")
-    axis_clav.axvline(calibrated_length, color=STEP_COLORS["step3"], lw=2,
-                      label=f"calibrated {calibrated_length:.2f} mm\n(warm start {warm_start:.2f} mm — they agree,\nso the length needs no prior)")
+    axis_clav.hist(
+        measured,
+        bins=35,
+        color="tab:gray",
+        alpha=0.75,
+        label=f"measured RCAS-RCAJ ({measured.min():.0f}-{measured.max():.0f} mm)",
+    )
+    axis_clav.axvline(
+        calibrated_length,
+        color=STEP_COLORS["step3"],
+        lw=2,
+        label=(
+            f"calibrated {calibrated_length:.2f} mm\n"
+            f"(warm start {warm_start:.2f} mm — they agree,\nso the length needs no prior)"
+        ),
+    )
     axis_clav.set_xlabel("clavicle length (mm)")
     axis_clav.set_ylabel("frames")
     axis_clav.set_title("the scatter a constant length has to absorb")
@@ -269,8 +289,11 @@ def plot_step3(data: dict):
     axis_rmse.grid(True, alpha=0.25)
     axis_rmse.legend(fontsize=8)
 
-    axis_box.boxplot([values for values, _ in series.values()], tick_labels=[label.split(" (")[0] for label in series],
-                     showfliers=False)
+    axis_box.boxplot(
+        [values for values, _ in series.values()],
+        tick_labels=[label.split(" (")[0] for label in series],
+        showfliers=False,
+    )
     axis_box.set_ylabel("marker RMSE (mm)")
     axis_box.set_title("distribution over frames")
     axis_box.grid(True, axis="y", alpha=0.25)

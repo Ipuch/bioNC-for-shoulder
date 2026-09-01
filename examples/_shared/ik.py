@@ -6,6 +6,8 @@ coordinates into joint (Euler) angles, the marker RMSE, and a generic joint-angl
 that labels each axis from the joint's own Euler sequence.
 """
 
+from functools import lru_cache
+
 import ezc3d
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,6 +16,7 @@ from pyomeca import Markers
 from bionc import InverseKinematics, NaturalCoordinates
 
 
+@lru_cache(maxsize=None)
 def c3d_length_factor(c3d_filename: str) -> float:
     """
     Divisor turning this c3d's POINT units into metres: 1000 for millimetres, 1 for metres.
@@ -22,6 +25,9 @@ def c3d_length_factor(c3d_filename: str) -> float:
     geometry. Both must agree: some files of the same study are stored in mm (``testFlorent_*.c3d``)
     and others in m (the ``99007140-*`` dataset), and assuming mm on a metre file makes the tracked
     markers 1000x too small -- a ~125 mm marker RMSE instead of ~3 mm.
+
+    Cached: reading one parameter costs a full ``ezc3d`` parse of the file, and ``load_markers``
+    asks on every call -- a few hundred times over a leave-one-out sweep.
     """
     units = ezc3d.c3d(c3d_filename)["parameters"]["POINT"]["UNITS"]["value"]
     return 1000.0 if len(units) > 0 and units[0] in ("mm", "millimeter") else 1.0
@@ -60,6 +66,19 @@ def joint_angles_over_trial(model, Qopt: np.ndarray) -> np.ndarray:
     return angles
 
 
+def rmse_mm(residual_norms) -> float:
+    """RMS of per-marker residual norms [m] over everything given, in millimetres."""
+    return float(np.sqrt(np.mean(np.asarray(residual_norms) ** 2)) * 1000)
+
+
+def per_frame_rmse_mm(residual_norms) -> np.ndarray:
+    """RMS of per-marker residual norms [m] over the markers of each frame, in millimetres.
+
+    ``residual_norms`` is ``(nb_markers, nb_frames)``; the result is one value per frame.
+    """
+    return np.sqrt(np.mean(np.asarray(residual_norms) ** 2, axis=0)) * 1000
+
+
 def marker_rmse_mm(ik: InverseKinematics) -> tuple[float, np.ndarray]:
     """
     Post-optimisation marker RMSE in millimetres.
@@ -67,10 +86,42 @@ def marker_rmse_mm(ik: InverseKinematics) -> tuple[float, np.ndarray]:
     Returns ``(global_rmse, per_frame_rmse)`` where the global value is taken over every
     technical marker and every frame.
     """
-    residuals_norm = ik.sol()["marker_residuals_norm"]  # (nb_markers x nb_frames), in metres
-    global_rmse = float(np.sqrt(np.mean(residuals_norm**2)) * 1000)
-    per_frame_rmse = np.sqrt(np.mean(residuals_norm**2, axis=0)) * 1000
-    return global_rmse, per_frame_rmse
+    residual_norms = ik.sol()["marker_residuals_norm"]  # (nb_markers x nb_frames), in metres
+    return rmse_mm(residual_norms), per_frame_rmse_mm(residual_norms)
+
+
+def marker_groups(model) -> dict[str, np.ndarray]:
+    """Indices into ``model.marker_names_technical`` grouped by the segment that carries them."""
+    groups, offset = {}, 0
+    for name in model.segments.keys():
+        count = model.segments[name].nb_markers_technical
+        groups[name] = np.arange(offset, offset + count)
+        offset += count
+    return groups
+
+
+def solve_trial(model, c3d_filename: str, *, stride: int = 1, method: str = "dik") -> dict:
+    """
+    Differential IK of ``model`` over one whole trial, with the marker RMSE split by segment.
+
+    Returns ``{markers, Qopt, rmse_mm, per_frame_rmse_mm, rmse_by_group_mm}`` -- lengths in
+    millimetres. Used by the leave-one-out sweep to score a fold and by the replay script to
+    reconstruct a trial, which is why it lives here rather than in either of them.
+    """
+    markers = load_markers(model, c3d_filename, stride=stride)
+    ik = InverseKinematics(model, markers)
+    Qopt = np.asarray(ik.solve(method=method))
+    residual_norms = ik.sol()["marker_residuals_norm"]  # (nb_markers, nb_frames), in metres
+
+    return dict(
+        markers=markers,
+        Qopt=Qopt,
+        rmse_mm=rmse_mm(residual_norms),
+        per_frame_rmse_mm=per_frame_rmse_mm(residual_norms),
+        rmse_by_group_mm={
+            name: rmse_mm(residual_norms[index]) for name, index in marker_groups(model).items() if len(index)
+        },
+    )
 
 
 def euler_axis_labels(sequence: str) -> list[str]:

@@ -33,20 +33,19 @@ This script only computes and reports; the figures live in :mod:`studies.figures
 which reads that cache, so you can redraw them without re-solving anything.
 """
 
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root on the path
 
 import numpy as np
 
-from bionc import InverseKinematics
+from bionc.bionc_numpy.natural_vector import NaturalVector
 
 from examples._shared.c3d_data import MultiC3dData
 from examples._shared.frames import scs_to_natural
-from examples._shared.ik import load_markers
+from examples._shared.ik import solve_trial
 from examples.clinical.model import build_model_constrained, build_model_free
-from shoulder_calibration import (
+from studies.shoulder_calibration import (
+    FRAMES_PER_TRIAL,
     MARKER_SET,
     calibrate,
     ellipsoid_surface_distance_mm,
@@ -56,54 +55,20 @@ from shoulder_calibration import (
     trials,
 )
 
-RESULTS_DIR = Path(__file__).resolve().parents[1] / "results" / "loo"
+LOO_DIR = Path(__file__).resolve().parents[1] / "results" / "loo"
 # Every 5th frame of each full trial (20 Hz). The metric is a per-frame spatial residual, not a
 # temporal signal, so decimating costs nothing but turns three differential IK solves per
 # (fold, trial) from ~20 s into ~8 s -- the difference between a 75 and a 35 minute sweep.
 EVAL_STRIDE = 5
-FRAMES_PER_TRIAL = 35
 
 
 # --------------------------------------------------------------------------------- evaluation
-def marker_groups(model) -> dict[str, np.ndarray]:
-    """Indices into ``model.marker_names_technical`` grouped by the segment that carries them."""
-    groups, offset = {}, 0
-    for name in model.segments.keys():
-        count = model.segments[name].nb_markers_technical
-        groups[name] = np.arange(offset, offset + count)
-        offset += count
-    return groups
-
-
 def point_in_global(model, segment_name: str, position_natural, Q: np.ndarray) -> np.ndarray:
     """Trajectory ``(3, nb_frames)`` of a segment-fixed point, given natural coordinates ``Q``."""
-    from bionc.bionc_numpy.natural_vector import NaturalVector
-
     interpolation = np.asarray(NaturalVector(np.asarray(position_natural).reshape(3)).interpolate(), dtype=float)
     segment = model.segments[segment_name]
     block = slice(12 * segment.index, 12 * segment.index + 12)
     return interpolation @ np.asarray(Q)[block, :]
-
-
-def solve_trial(model, path: str, stride: int = EVAL_STRIDE) -> dict:
-    """Differential IK of ``model`` on one whole trial, with the RMSE split by marker group."""
-    markers = load_markers(model, path, stride=stride)
-    ik = InverseKinematics(model, markers)
-    Qopt = ik.solve(method="dik")
-    residuals_mm = ik.sol()["marker_residuals_norm"] * 1000  # (nb_markers, nb_frames)
-
-    per_group = {
-        name: float(np.sqrt(np.mean(residuals_mm[index] ** 2)))
-        for name, index in marker_groups(model).items()
-        if len(index)
-    }
-    return dict(
-        markers=markers,
-        Qopt=Qopt,
-        rmse_mm=float(np.sqrt(np.mean(residuals_mm**2))),
-        rmse_by_group_mm=per_group,
-        per_frame_rmse_mm=np.sqrt(np.mean(residuals_mm**2, axis=0)),
-    )
 
 
 def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_STRIDE) -> dict:
@@ -119,7 +84,7 @@ def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_
       the contact point, how far apart it leaves the two glenohumeral centres).
     * ``reference_model`` -- the uncalibrated constrained model: clavicle + spherical GH on ``RGJC``,
       scapulothoracic free. What you get without any of this.
-    * ``result.step2["model"]`` -- same constraint set as the reference, calibrated parameters. The
+    * ``result.step2.model`` -- same constraint set as the reference, calibrated parameters. The
       difference between these two is the value of the calibration alone.
     * ``result.model`` (step 3) -- the above plus the closed-loop ellipsoid. The difference from
       step 2 is what that extra constraint costs.
@@ -127,7 +92,7 @@ def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_
     calibrated = solve_trial(result.model, path, stride=stride)
     free = solve_trial(free_model, path, stride=stride)
     reference = solve_trial(reference_model, path, stride=stride)
-    calibrated_free_st = solve_trial(result.step2["model"], path, stride=stride)
+    calibrated_free_st = solve_trial(result.step2.model, path, stride=stride)
 
     # Where the scapula actually goes on this trial, versus the ellipsoid calibrated without it.
     # The point measured is the model's own contact point (SCAP_CENTROID), carried by the *FREE*
@@ -139,14 +104,18 @@ def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_
 
     joint = result.model.joints["Scapulothoracic"]
     semi_axes = np.array([float(length) for length in joint.semi_axis_lengths])
-    center_scs = result.step3["sol"]["ellipsoid_center_scs"]
-    rotation = result.step3["sol"].get("ellipsoid_axes_scs")
+    center_scs = result.step3.sol["ellipsoid_center_scs"]
+    rotation = result.step3.sol.get("ellipsoid_axes_scs")
     surface_mm = ellipsoid_surface_distance_mm(cloud, semi_axes, center_scs, rotation)
 
     # how far apart the two calibrated centres land when nothing forces them together
-    centres = result.step3["centres"]
-    glenoid = point_in_global(free_model, "RSCAPULA", scs_to_natural(result.model, "RSCAPULA", centres["glenoid"]), free["Qopt"])
-    head = point_in_global(free_model, "RHUMERUS", scs_to_natural(result.model, "RHUMERUS", centres["head"]), free["Qopt"])
+    centres = result.step3.centres
+    glenoid = point_in_global(
+        free_model, "RSCAPULA", scs_to_natural(result.model, "RSCAPULA", centres["glenoid"]), free["Qopt"]
+    )
+    head = point_in_global(
+        free_model, "RHUMERUS", scs_to_natural(result.model, "RHUMERUS", centres["head"]), free["Qopt"]
+    )
     gh_gap_mm = np.linalg.norm(glenoid - head, axis=0) * 1000
 
     return dict(
@@ -172,20 +141,20 @@ def _fold_payload(result, evaluations, held_out: str) -> dict:
         "train": np.array(result.train_paths),
         "parameter_labels": np.array(list(result.parameters)),
         "parameters": np.array(list(result.parameters.values())),
-        "step1_semi_axes": result.step1["sol"]["semi_axes"],
-        "step1_center_scs": result.step1["sol"]["ellipsoid_center_scs"],
-        "step3_semi_axes": result.step3["sol"]["semi_axes"],
-        "step3_center_scs": result.step3["sol"]["ellipsoid_center_scs"],
+        "step1_semi_axes": result.step1.sol["semi_axes"],
+        "step1_center_scs": result.step1.sol["ellipsoid_center_scs"],
+        "step3_semi_axes": result.step3.sol["semi_axes"],
+        "step3_center_scs": result.step3.sol["ellipsoid_center_scs"],
         # identity unless the orientation was calibrated; kept so a model can be rebuilt from the cache
-        "step3_axes_scs": result.step3["sol"].get("ellipsoid_axes_scs", np.eye(3)),
-        "step2_glenoid": result.step2["centres"]["glenoid"],
-        "step2_head": result.step2["centres"]["head"],
-        "step3_glenoid": result.step3["centres"]["glenoid"],
-        "step3_head": result.step3["centres"]["head"],
-        "step2_clavicle": result.step2["sol"]["parameters"]["Clavicle.length"],
-        "step3_clavicle": result.step3["sol"]["parameters"]["Clavicle.length"],
-        "train_rmse_mm": result.step3["sol"]["marker_rmse_mm"],
-        "at_bounds": np.array(result.step3["sol"]["parameters_at_bounds"]),
+        "step3_axes_scs": result.step3.sol.get("ellipsoid_axes_scs", np.eye(3)),
+        "step2_glenoid": result.step2.centres["glenoid"],
+        "step2_head": result.step2.centres["head"],
+        "step3_glenoid": result.step3.centres["glenoid"],
+        "step3_head": result.step3.centres["head"],
+        "step2_clavicle": result.step2.sol["parameters"]["Clavicle.length"],
+        "step3_clavicle": result.step3.sol["parameters"]["Clavicle.length"],
+        "train_rmse_mm": result.step3.sol["marker_rmse_mm"],
+        "at_bounds": np.array(result.step3.sol["parameters_at_bounds"]),
     }
     for key in ("trial", "kind"):
         payload[f"eval_{key}"] = np.array([evaluation[key] for evaluation in evaluations])
@@ -207,8 +176,8 @@ def _fold_payload(result, evaluations, held_out: str) -> dict:
 
 def run_fold(held_out: str, paths: list[str], *, frames_per_trial: int, stride: int, cache: bool = True) -> dict:
     """Calibrate on every trial but ``held_out``, then score the fold on all of them."""
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    cache_file = RESULTS_DIR / f"fold_{trial_label(held_out)}.npz"
+    LOO_DIR.mkdir(parents=True, exist_ok=True)
+    cache_file = LOO_DIR / f"fold_{trial_label(held_out)}.npz"
     if cache and cache_file.exists():
         print(f"[{trial_label(held_out)}] cached")
         return dict(np.load(cache_file, allow_pickle=True))
@@ -289,8 +258,11 @@ def summarise(folds: list[dict]) -> str:
         f"glenohumeral centre gap on held-out trial {mean['gh_gap']:.2f} +- {sd['gh_gap']:.2f} mm",
     ]
 
-    lines += ["", "--- calibrated parameters across folds (mm) ---",
-              f"{'parameter':<38s} {'mean':>9s} {'sd':>8s} {'min':>9s} {'max':>9s}"]
+    lines += [
+        "",
+        "--- calibrated parameters across folds (mm) ---",
+        f"{'parameter':<38s} {'mean':>9s} {'sd':>8s} {'min':>9s} {'max':>9s}",
+    ]
     labels = list(folds[0]["parameter_labels"])
     values = np.array([fold["parameters"] for fold in folds]) * 1000
     for index, label in enumerate(labels):
@@ -333,8 +305,8 @@ def main():
     folds = [run_fold(path, paths, frames_per_trial=FRAMES_PER_TRIAL, stride=EVAL_STRIDE) for path in paths]
 
     print(summarise(folds))
-    write_csv(folds, RESULTS_DIR / "summary.csv")
-    print(f"\nper-(fold, trial) rows written to {RESULTS_DIR / 'summary.csv'}")
+    write_csv(folds, LOO_DIR / "summary.csv")
+    print(f"\nper-(fold, trial) rows written to {LOO_DIR / 'summary.csv'}")
     print("figures: python studies/figures/leave_one_out.py")
 
 

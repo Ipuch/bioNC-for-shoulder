@@ -10,10 +10,8 @@ Run (from the repo root, inside the ``bionc`` conda env):
     python examples/clinical/01_build_model_no_constraints.py
 """
 
-import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root on the path
 
 from examples._shared.ik import load_markers
 from examples._shared.viz import animate_model

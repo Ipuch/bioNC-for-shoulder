@@ -5,8 +5,8 @@ plus two clinical specificities:
 
 * ``marker_set`` chooses which markers are *technical* (tracked by the IK): the skin
   ``Cluster_*`` markers, the anatomical bone landmarks, or both;
-* :func:`build_ellipsoid_model` replaces the free scapulothoracic joint by a tangent
-  ellipsoid-on-plane joint (Naaim 2016/2017), used by the calibration study.
+* :func:`build_scapulothoracic_ellipsoid_model` replaces the free scapulothoracic joint by an
+  ellipsoid joint (Naaim 2016/2017) -- tangent or one-point -- used by the calibration studies.
 
 Every builder takes a ``source`` that is either a c3d path or any ``bionc`` ``Data`` object -- pass
 an :class:`~examples._shared.c3d_data.MultiC3dData` to calibrate the segment geometry and the
@@ -36,6 +36,8 @@ from bionc import (
     TransformationMatrixType,
     C3dData,
 )
+from bionc.bionc_numpy.natural_marker import NaturalMarker
+from bionc.bionc_numpy.natural_vector import NaturalVector
 
 from examples._shared.frames import (
     add_marker_from_scs,
@@ -73,12 +75,18 @@ def _build_segments(
     model["THORAX"].add_marker(MarkerTemplate(name="SXS", parent_name="THORAX", is_technical=True, is_anatomical=True))
     model["THORAX"].add_marker(MarkerTemplate(name="TV8", parent_name="THORAX", is_technical=True, is_anatomical=True))
     model["THORAX"].add_marker(MarkerTemplate(name="CV7", parent_name="THORAX", is_technical=True, is_anatomical=True))
-    model["THORAX"].add_marker(MarkerTemplate(name="SME", parent_name="THORAX", is_technical=False, is_anatomical=False))
-    model["THORAX"].add_marker(MarkerTemplate(name="RCAS", parent_name="THORAX", is_technical=False, is_anatomical=False))
+    model["THORAX"].add_marker(
+        MarkerTemplate(name="SME", parent_name="THORAX", is_technical=False, is_anatomical=False)
+    )
+    model["THORAX"].add_marker(
+        MarkerTemplate(name="RCAS", parent_name="THORAX", is_technical=False, is_anatomical=False)
+    )
 
     model["RSCAPULA"] = SegmentTemplate(
         natural_segment=NaturalSegmentTemplate(
-            u_axis=AxisFunctionTemplate(function=lambda m, bio: MarkerTemplate.normal_to(m, bio, "RSAA", "RSIA", "RSRS")),
+            u_axis=AxisFunctionTemplate(
+                function=lambda m, bio: MarkerTemplate.normal_to(m, bio, "RSAA", "RSIA", "RSRS")
+            ),
             proximal_point="RSAA",
             distal_point="RSIA",
             w_axis=AxisTemplate(start="RSRS", end="RSAA"),
@@ -98,7 +106,9 @@ def _build_segments(
 
     model["RHUMERUS"] = SegmentTemplate(
         natural_segment=NaturalSegmentTemplate(
-            u_axis=AxisFunctionTemplate(function=lambda m, bio: MarkerTemplate.normal_to(m, bio, "RHLE", "RHME", "RGJC")),
+            u_axis=AxisFunctionTemplate(
+                function=lambda m, bio: MarkerTemplate.normal_to(m, bio, "RHLE", "RHME", "RGJC")
+            ),
             proximal_point="RGJC",
             distal_point=lambda m, bio: MarkerTemplate.middle_of(m, bio, "RHLE", "RHME"),
             w_axis=AxisTemplate(start="RHME", end="RHLE"),
@@ -178,9 +188,7 @@ def build_model(
     use_anatomical = marker_set in ("anatomical", "both")
 
     model = BiomechanicalModelTemplate()
-    _build_segments(
-        model, use_cluster=use_cluster, use_anatomical=use_anatomical, include_humerus=include_humerus
-    )
+    _build_segments(model, use_cluster=use_cluster, use_anatomical=use_anatomical, include_humerus=include_humerus)
 
     model.add_joint(
         name="Freeflyer",
@@ -280,8 +288,6 @@ def add_glenohumeral_centres(model: BiomechanicalModel) -> BiomechanicalModel:
 
     Modifies ``model`` in place and returns it.
     """
-    from bionc.bionc_numpy.natural_marker import NaturalMarker
-
     for segment_name, centre_name in (("RSCAPULA", GH_GLENOID), ("RHUMERUS", GH_HEAD)):
         segment = model.segments[segment_name]
         position = np.asarray(segment.marker_from_name("RGJC").position, dtype=float).reshape(3)
@@ -330,8 +336,6 @@ def set_glenohumeral_centres(model: BiomechanicalModel, glenoid_scs=None, head_s
     it in place keeps the constraint and the segment in sync. ``interpolation_matrix`` is derived
     from ``position`` at construction, so both have to be refreshed.
     """
-    from bionc.bionc_numpy.natural_vector import NaturalVector
-
     for segment_name, centre_name, position_scs in (
         ("RSCAPULA", GH_GLENOID, glenoid_scs),
         ("RHUMERUS", GH_HEAD, head_scs),
@@ -350,8 +354,6 @@ def _add_scapula_landmark_centroid(model: BiomechanicalModel, name: str = "SCAP_
     (the AA / AI / TS of the ISB scapula), used as the contact point of the one-point ellipsoid
     joint. Its natural position is the mean of the three landmarks' natural positions.
     """
-    from bionc.bionc_numpy.natural_marker import NaturalMarker
-
     scapula = model["RSCAPULA"]
     landmark_positions = [
         np.asarray(scapula.marker_from_name(landmark).position, dtype=float).reshape(3)

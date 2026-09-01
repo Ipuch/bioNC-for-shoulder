@@ -84,7 +84,7 @@ def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_
       the contact point, how far apart it leaves the two glenohumeral centres).
     * ``reference_model`` -- the uncalibrated constrained model: clavicle + spherical GH on ``RGJC``,
       scapulothoracic free. What you get without any of this.
-    * ``result.step2["model"]`` -- same constraint set as the reference, calibrated parameters. The
+    * ``result.step2.model`` -- same constraint set as the reference, calibrated parameters. The
       difference between these two is the value of the calibration alone.
     * ``result.model`` (step 3) -- the above plus the closed-loop ellipsoid. The difference from
       step 2 is what that extra constraint costs.
@@ -92,7 +92,7 @@ def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_
     calibrated = solve_trial(result.model, path, stride=stride)
     free = solve_trial(free_model, path, stride=stride)
     reference = solve_trial(reference_model, path, stride=stride)
-    calibrated_free_st = solve_trial(result.step2["model"], path, stride=stride)
+    calibrated_free_st = solve_trial(result.step2.model, path, stride=stride)
 
     # Where the scapula actually goes on this trial, versus the ellipsoid calibrated without it.
     # The point measured is the model's own contact point (SCAP_CENTROID), carried by the *FREE*
@@ -104,12 +104,12 @@ def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_
 
     joint = result.model.joints["Scapulothoracic"]
     semi_axes = np.array([float(length) for length in joint.semi_axis_lengths])
-    center_scs = result.step3["sol"]["ellipsoid_center_scs"]
-    rotation = result.step3["sol"].get("ellipsoid_axes_scs")
+    center_scs = result.step3.sol["ellipsoid_center_scs"]
+    rotation = result.step3.sol.get("ellipsoid_axes_scs")
     surface_mm = ellipsoid_surface_distance_mm(cloud, semi_axes, center_scs, rotation)
 
     # how far apart the two calibrated centres land when nothing forces them together
-    centres = result.step3["centres"]
+    centres = result.step3.centres
     glenoid = point_in_global(free_model, "RSCAPULA", scs_to_natural(result.model, "RSCAPULA", centres["glenoid"]), free["Qopt"])
     head = point_in_global(free_model, "RHUMERUS", scs_to_natural(result.model, "RHUMERUS", centres["head"]), free["Qopt"])
     gh_gap_mm = np.linalg.norm(glenoid - head, axis=0) * 1000
@@ -137,20 +137,20 @@ def _fold_payload(result, evaluations, held_out: str) -> dict:
         "train": np.array(result.train_paths),
         "parameter_labels": np.array(list(result.parameters)),
         "parameters": np.array(list(result.parameters.values())),
-        "step1_semi_axes": result.step1["sol"]["semi_axes"],
-        "step1_center_scs": result.step1["sol"]["ellipsoid_center_scs"],
-        "step3_semi_axes": result.step3["sol"]["semi_axes"],
-        "step3_center_scs": result.step3["sol"]["ellipsoid_center_scs"],
+        "step1_semi_axes": result.step1.sol["semi_axes"],
+        "step1_center_scs": result.step1.sol["ellipsoid_center_scs"],
+        "step3_semi_axes": result.step3.sol["semi_axes"],
+        "step3_center_scs": result.step3.sol["ellipsoid_center_scs"],
         # identity unless the orientation was calibrated; kept so a model can be rebuilt from the cache
-        "step3_axes_scs": result.step3["sol"].get("ellipsoid_axes_scs", np.eye(3)),
-        "step2_glenoid": result.step2["centres"]["glenoid"],
-        "step2_head": result.step2["centres"]["head"],
-        "step3_glenoid": result.step3["centres"]["glenoid"],
-        "step3_head": result.step3["centres"]["head"],
-        "step2_clavicle": result.step2["sol"]["parameters"]["Clavicle.length"],
-        "step3_clavicle": result.step3["sol"]["parameters"]["Clavicle.length"],
-        "train_rmse_mm": result.step3["sol"]["marker_rmse_mm"],
-        "at_bounds": np.array(result.step3["sol"]["parameters_at_bounds"]),
+        "step3_axes_scs": result.step3.sol.get("ellipsoid_axes_scs", np.eye(3)),
+        "step2_glenoid": result.step2.centres["glenoid"],
+        "step2_head": result.step2.centres["head"],
+        "step3_glenoid": result.step3.centres["glenoid"],
+        "step3_head": result.step3.centres["head"],
+        "step2_clavicle": result.step2.sol["parameters"]["Clavicle.length"],
+        "step3_clavicle": result.step3.sol["parameters"]["Clavicle.length"],
+        "train_rmse_mm": result.step3.sol["marker_rmse_mm"],
+        "at_bounds": np.array(result.step3.sol["parameters_at_bounds"]),
     }
     for key in ("trial", "kind"):
         payload[f"eval_{key}"] = np.array([evaluation[key] for evaluation in evaluations])

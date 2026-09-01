@@ -121,6 +121,7 @@ def calibrate(ellipsoid_model: str, base_model, markers: np.ndarray, marker_set:
                 half_range=bounds["center_half_range"],
                 box_center=reference["center"],
                 prior=1.0,
+                report_as="ellipsoid_center",
             ),
         ],
         active_direct_frame_constraints=True,

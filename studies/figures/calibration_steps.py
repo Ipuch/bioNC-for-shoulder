@@ -71,35 +71,35 @@ def compute(paths) -> dict:
     clavicle_markers = load_named_markers(paths, ("RCAS", "RCAJ"), result.frames)
     clavicle_measured_mm = np.linalg.norm(clavicle_markers[:, 0] - clavicle_markers[:, 1], axis=0) * 1000
 
-    warm = step1["warm_start"]
+    warm = step1.warm_start
     arrays = dict(
-        cloud=step1["cloud"],
+        cloud=step1.cloud,
         cloud_free=to_segment_frame(free_model, free_Q, contact_global, segment="THORAX"),
-        thorax_center=step1["reference"]["center"],
-        thorax_scale=step1["reference"]["scale"],
+        thorax_center=step1.reference["center"],
+        thorax_scale=step1.reference["scale"],
         warm_semi_axes=warm["semi_axes"],
         warm_center=warm["center"],
-        step1_semi_axes=step1["sol"]["semi_axes"],
-        step1_center=step1["sol"]["ellipsoid_center_scs"],
-        step3_semi_axes=step3["sol"]["semi_axes"],
-        step3_center=step3["sol"]["ellipsoid_center_scs"],
-        step1_rmse=step1["sol"]["per_frame_marker_rmse_mm"],
-        step2_rmse=step2["sol"]["per_frame_marker_rmse_mm"],
-        step3_rmse=step3["sol"]["per_frame_marker_rmse_mm"],
+        step1_semi_axes=step1.sol["semi_axes"],
+        step1_center=step1.sol["ellipsoid_center_scs"],
+        step3_semi_axes=step3.sol["semi_axes"],
+        step3_center=step3.sol["ellipsoid_center_scs"],
+        step1_rmse=step1.sol["per_frame_marker_rmse_mm"],
+        step2_rmse=step2.sol["per_frame_marker_rmse_mm"],
+        step3_rmse=step3.sol["per_frame_marker_rmse_mm"],
         gap_uncalibrated_mm=gap_mm(scapula.marker_from_name("RGJC").position, humerus.marker_from_name("RGJC").position),
         gap_calibrated_mm=gap_mm(
-            scs_to_natural(result.model, "RSCAPULA", step3["centres"]["glenoid"]),
-            scs_to_natural(result.model, "RHUMERUS", step3["centres"]["head"]),
+            scs_to_natural(result.model, "RSCAPULA", step3.centres["glenoid"]),
+            scs_to_natural(result.model, "RHUMERUS", step3.centres["head"]),
         ),
         clavicle_measured_mm=clavicle_measured_mm,
-        clavicle_calibrated_mm=np.array([step3["sol"]["parameters"]["Clavicle.length"] * 1000]),
-        clavicle_initial_mm=np.array([step2["sol"]["theta0"][-1] * 1000]),
-        drift_semi_axes=step3["sol"]["semi_axes"] - step1["sol"]["semi_axes"],
-        drift_center=step3["sol"]["ellipsoid_center_scs"] - step1["sol"]["ellipsoid_center_scs"],
-        drift_glenoid=step3["centres"]["glenoid"] - step2["centres"]["glenoid"],
-        drift_head=step3["centres"]["head"] - step2["centres"]["head"],
+        clavicle_calibrated_mm=np.array([step3.sol["parameters"]["Clavicle.length"] * 1000]),
+        clavicle_initial_mm=np.array([step2.sol["theta0"][-1] * 1000]),
+        drift_semi_axes=step3.sol["semi_axes"] - step1.sol["semi_axes"],
+        drift_center=step3.sol["ellipsoid_center_scs"] - step1.sol["ellipsoid_center_scs"],
+        drift_glenoid=step3.centres["glenoid"] - step2.centres["glenoid"],
+        drift_head=step3.centres["head"] - step2.centres["head"],
         drift_clavicle=np.array(
-            [step3["sol"]["parameters"]["Clavicle.length"] - step2["sol"]["parameters"]["Clavicle.length"]]
+            [step3.sol["parameters"]["Clavicle.length"] - step2.sol["parameters"]["Clavicle.length"]]
         ),
     )
     arrays["free_rmse"] = _free_rmse(free_model, free_markers, free_Q)

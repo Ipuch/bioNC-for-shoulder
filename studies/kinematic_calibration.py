@@ -34,9 +34,10 @@ from bionc import NaturalCoordinates as NaturalCoordinatesNumpy
 from bionc.bionc_casadi import NaturalCoordinates, SegmentNaturalCoordinates
 from bionc.bionc_casadi.natural_marker import NaturalMarker, SegmentNaturalVector
 from bionc.bionc_casadi.natural_vector import NaturalVector
+from bionc.bionc_numpy.natural_vector import NaturalVector as NaturalVectorNumpy
 from bionc.utils.casadi_utils import sarrus
 
-from examples._shared.frames import natural_to_scs, rodrigues_matrix, segment_transformation_matrix
+from examples._shared.frames import natural_to_scs, rodrigues_matrix, scs_to_natural, segment_transformation_matrix
 from examples._shared.ik import per_frame_rmse_mm, rmse_mm
 
 
@@ -111,6 +112,15 @@ class CalibrationParameter:
     def apply(self, model, values: np.ndarray) -> None:
         raise NotImplementedError
 
+    def summary(self, model, values: np.ndarray) -> dict:
+        """
+        Extra entries this block contributes to :meth:`KinematicCalibration.sol`.
+
+        Empty by default. Overriding it here rather than type-switching in the engine is what
+        lets a new kind of unknown be added without the engine knowing it exists.
+        """
+        return {}
+
 
 class EllipsoidSemiAxes(CalibrationParameter):
     """The ``(a, b, c)`` semi-axis lengths [m] of an ellipsoid joint."""
@@ -143,6 +153,9 @@ class EllipsoidSemiAxes(CalibrationParameter):
     def apply(self, model, values):
         model.joints[self.joint].semi_axis_lengths = tuple(float(value) for value in values)
 
+    def summary(self, model, values):
+        return {"semi_axes": values}
+
 
 class MarkerPosition(CalibrationParameter):
     """
@@ -166,7 +179,14 @@ class MarkerPosition(CalibrationParameter):
     size = 3
 
     def __init__(
-        self, segment: str, marker: str, targets, half_range: float = 0.05, box_center=None, prior: float = 0.0
+        self,
+        segment: str,
+        marker: str,
+        targets,
+        half_range: float = 0.05,
+        box_center=None,
+        prior: float = 0.0,
+        report_as: str = None,
     ):
         self.segment = segment
         self.marker = marker
@@ -174,6 +194,7 @@ class MarkerPosition(CalibrationParameter):
         self.half_range = half_range
         self.box_center = None if box_center is None else np.asarray(box_center, dtype=float).reshape(3)
         self.prior = prior
+        self.report_as = report_as
 
     @property
     def labels(self):
@@ -199,14 +220,21 @@ class MarkerPosition(CalibrationParameter):
             setattr(model_mx.joints[joint_name], attribute, marker)
 
     def apply(self, model, values):
-        from bionc.bionc_numpy.natural_vector import NaturalVector as NaturalVectorNumpy
-
         B_inv = np.linalg.inv(segment_transformation_matrix(model, self.segment))
         marker = model.segments[self.segment].marker_from_name(self.marker)
         marker.position = NaturalVectorNumpy(B_inv @ np.asarray(values, dtype=float).reshape(3))
         marker.interpolation_matrix = marker.position.interpolate()
         for joint_name, attribute in self.targets:
             setattr(model.joints[joint_name], attribute, marker)
+
+    def summary(self, model, values):
+        """Reported under ``report_as`` only when the caller asked for it (the ellipsoid centre)."""
+        if self.report_as is None:
+            return {}
+        return {
+            f"{self.report_as}_scs": values,
+            f"{self.report_as}_natural": scs_to_natural(model, self.segment, values),
+        }
 
 
 class EllipsoidOrientation(CalibrationParameter):
@@ -227,6 +255,7 @@ class EllipsoidOrientation(CalibrationParameter):
         self.segment = segment
         self.half_range = half_range
         self.prior = prior
+        self._reference_axes = None
 
     @property
     def labels(self):
@@ -239,11 +268,21 @@ class EllipsoidOrientation(CalibrationParameter):
         return np.full(3, -self.half_range), np.full(3, self.half_range)
 
     def reference_axes(self, model) -> np.ndarray:
-        """The model's current principal axes, as unit columns in the segment coordinate system."""
-        axes = np.column_stack(
-            [natural_to_scs(model, self.segment, axis.position) for axis in model.joints[self.joint].ellipsoid_axes]
-        )
-        return axes / np.linalg.norm(axes, axis=0, keepdims=True)
+        """
+        The axes the rotation increment is measured *from*, as unit columns in segment coordinates.
+
+        Captured the first time it is asked for and then reused. The unknown is an increment on
+        these axes, so re-reading them from the model after :meth:`apply` has written a rotation
+        into it would measure the next increment from the already-rotated triad and compound the
+        two. Every other parameter block writes an absolute value and is naturally idempotent;
+        caching is what makes this one behave the same way.
+        """
+        if self._reference_axes is None:
+            axes = np.column_stack(
+                [natural_to_scs(model, self.segment, axis.position) for axis in model.joints[self.joint].ellipsoid_axes]
+            )
+            self._reference_axes = axes / np.linalg.norm(axes, axis=0, keepdims=True)
+        return self._reference_axes
 
     def bind(self, model_mx, model, symbols):
         B_inv = np.linalg.inv(segment_transformation_matrix(model, self.segment))
@@ -259,13 +298,17 @@ class EllipsoidOrientation(CalibrationParameter):
         ]
 
     def apply(self, model, values):
-        from bionc.bionc_numpy.natural_vector import NaturalVector as NaturalVectorNumpy
-
         B_inv = np.linalg.inv(segment_transformation_matrix(model, self.segment))
         axes = self.rotation_matrix(model, values) @ self.reference_axes(model)
         for index, axis in enumerate(model.joints[self.joint].ellipsoid_axes):
             axis.position = NaturalVectorNumpy(B_inv @ axes[:, index])
             axis.interpolation_matrix = axis.position.interpolate().rot
+
+    def summary(self, model, values):
+        return {
+            "ellipsoid_rotation_vector": values,
+            "ellipsoid_axes_scs": self.rotation_matrix(model, values) @ self.reference_axes(model),
+        }
 
     @staticmethod
     def rotation_matrix(model, values) -> np.ndarray:
@@ -305,7 +348,13 @@ def default_ellipsoid_parameters(joint: str = "Scapulothoracic", segment: str = 
     """The historical parameter set: an ellipsoid's semi-axes and the location of its centre."""
     return [
         EllipsoidSemiAxes(joint, **kwargs),
-        MarkerPosition(segment, "ELLIPSOID_CENTER", targets=((joint, "ellipsoid_center"),), half_range=0.15),
+        MarkerPosition(
+            segment,
+            "ELLIPSOID_CENTER",
+            targets=((joint, "ellipsoid_center"),),
+            half_range=0.15,
+            report_as="ellipsoid_center",
+        ),
     ]
 
 
@@ -441,18 +490,19 @@ class KinematicCalibration:
 
     # ------------------------------------------------------------------ solve
     @staticmethod
-    def _default_options() -> dict:
+    def default_options(verbose: bool = True) -> dict:
+        """IPOPT options. ``verbose=False`` silences the solver's own output and timing."""
         return {
             # The NLP is large but very sparse (frames couple only through the shared parameters),
             # so the exact Hessian is affordable and converges in far fewer iterations than L-BFGS.
             "ipopt.hessian_approximation": "exact",
             "ipopt.max_iter": 3000,
             "ipopt.tol": 1e-8,
-            "ipopt.print_level": 5,
-            "print_time": True,
+            "ipopt.print_level": 5 if verbose else 0,
+            "print_time": verbose,
         }
 
-    def solve(self, Q_init: np.ndarray = None, options: dict = None) -> np.ndarray:
+    def solve(self, Q_init: np.ndarray = None, options: dict = None, verbose: bool = True) -> np.ndarray:
         """
         Solve the all-frames calibration.
 
@@ -471,7 +521,9 @@ class KinematicCalibration:
         lbx = np.concatenate([np.full(self._nb_Q, -np.inf), self._p_lb])
         ubx = np.concatenate([np.full(self._nb_Q, np.inf), self._p_ub])
 
-        solver = nlpsol("kinematic_calibration", "ipopt", self._nlp, options or self._default_options())
+        solver = nlpsol(
+            "kinematic_calibration", "ipopt", self._nlp, options if options is not None else self.default_options(verbose)
+        )
         result = solver(x0=x0, lbx=lbx, ubx=ubx, lbg=self._lbg, ubg=self._ubg)
 
         self.success = bool(solver.stats()["success"])
@@ -549,26 +601,15 @@ class KinematicCalibration:
             max_joint_residual_per_frame=joint_residuals,
             max_rigid_residual_per_frame=rigid_residuals,
         )
-        summary.update(self._ellipsoid_summary())
+        summary.update(self._parameter_summaries())
         if "Scapulothoracic" in self.model.joints.joint_names:
             summary["scapulothoracic_angles_deg"] = scapulothoracic_angles(self.model, self.Qopt)
             summary["scapulothoracic_angles_init_deg"] = scapulothoracic_angles(self.model, self.Q_init)
         return summary
 
-    def _ellipsoid_summary(self) -> dict:
-        """Ellipsoid parameters under their historical names, when an ellipsoid is being calibrated."""
-        from examples._shared.frames import scs_to_natural
-
+    def _parameter_summaries(self) -> dict:
+        """Whatever each parameter block wants reported, merged. No type-switching here."""
         summary = {}
         for parameter, block in self._parameter_slices():
-            if isinstance(parameter, EllipsoidSemiAxes):
-                summary["semi_axes"] = self.theta[block]
-            elif isinstance(parameter, MarkerPosition) and parameter.marker == "ELLIPSOID_CENTER":
-                summary["ellipsoid_center_scs"] = self.theta[block]
-                summary["ellipsoid_center_natural"] = scs_to_natural(self.model, parameter.segment, self.theta[block])
-            elif isinstance(parameter, EllipsoidOrientation):
-                summary["ellipsoid_rotation_vector"] = self.theta[block]
-                summary["ellipsoid_axes_scs"] = parameter.rotation_matrix(
-                    self.model, self.theta[block]
-                ) @ parameter.reference_axes(self.model)
+            summary.update(parameter.summary(self.model, self.theta[block]))
         return summary

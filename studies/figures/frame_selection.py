@@ -252,7 +252,7 @@ def main():
         "frame_selection_angle_ranges": plot_angle_ranges(data),
         "frame_selection_contact_patch": plot_contact_patch(data),
     }
-    finish(figures, arguments.save)
+    finish(figures, arguments.save, arguments.gh)
 
 
 if __name__ == "__main__":

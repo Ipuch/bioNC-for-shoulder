@@ -56,6 +56,15 @@ ELLIPSOID_JOINTS = ("tangent", "point")
 GH_GLENOID = "GH_GLENOID"
 GH_HEAD = "GH_HEAD"
 
+# What the joint on those two centres may be. CONSTANT_LENGTH is offered *here* and not in
+# GLENOHUMERAL_CONSTRAINTS above because the template-level joint is built on the shared ``RGJC``
+# marker -- one experimental marker claimed by both segments -- so its length would be exactly 0,
+# and at L = 0 the constraint Jacobian ``2 (p_parent - p_child)^T N`` vanishes identically. That is
+# a singular constraint, not a tight one. Only the dedicated centres, which the calibration can move
+# apart, give the joint two genuinely distinct points to hold at a distance.
+GLENOHUMERAL_CENTRE_CONSTRAINTS = ("spherical", "constant_length")
+MIN_GLENOHUMERAL_LENGTH = 1e-4  # [m], below which the constraint is numerically the singular one
+
 
 def _build_segments(
     model: BiomechanicalModelTemplate, *, use_cluster: bool, use_anatomical: bool, include_humerus: bool = True
@@ -275,9 +284,11 @@ def _add_thorax_ellipsoid_geometry(
         add_vector_from_scs(model, "THORAX", name, rotation[:, index])
 
 
-def add_glenohumeral_centres(model: BiomechanicalModel) -> BiomechanicalModel:
+def add_glenohumeral_centres(
+    model: BiomechanicalModel, *, constraint: str = "spherical", length: float = None
+) -> BiomechanicalModel:
     """
-    Give the spherical glenohumeral joint two *dedicated* centres that a calibration can move.
+    Give the glenohumeral joint two *dedicated* centres that a calibration can move.
 
     Out of the box the joint is built on the ``RGJC`` marker of each segment -- but ``RGJC`` is a
     tracked technical marker, and the marker objective must keep pulling it toward its experimental
@@ -286,8 +297,24 @@ def add_glenohumeral_centres(model: BiomechanicalModel) -> BiomechanicalModel:
     initialised at the respective ``RGJC`` local positions, and rebuild the joint on those. The
     tracked ``RGJC`` markers are left untouched.
 
+    ``constraint`` picks what holds the two centres together:
+
+    * ``"spherical"`` -- they are made coincident (3 constraints), the ball-and-socket assumption;
+    * ``"constant_length"`` -- they are held ``length`` metres apart (1 constraint), so the humeral
+      head sits anywhere on a sphere of that radius about the glenoid instead of being nailed to a
+      point. ``length`` is then required and must clear
+      :data:`MIN_GLENOHUMERAL_LENGTH` -- see the note on :data:`GLENOHUMERAL_CENTRE_CONSTRAINTS`.
+
     Modifies ``model`` in place and returns it.
     """
+    if constraint not in GLENOHUMERAL_CENTRE_CONSTRAINTS:
+        raise ValueError(f"constraint must be one of {GLENOHUMERAL_CENTRE_CONSTRAINTS}, got {constraint!r}")
+    if constraint == "constant_length" and (length is None or float(length) < MIN_GLENOHUMERAL_LENGTH):
+        raise ValueError(
+            f"a constant-length glenohumeral joint needs length >= {MIN_GLENOHUMERAL_LENGTH} m, got {length!r}. "
+            "At zero length the constraint Jacobian vanishes and the joint is singular, not spherical."
+        )
+
     for segment_name, centre_name in (("RSCAPULA", GH_GLENOID), ("RHUMERUS", GH_HEAD)):
         segment = model.segments[segment_name]
         position = np.asarray(segment.marker_from_name("RGJC").position, dtype=float).reshape(3)
@@ -302,20 +329,22 @@ def add_glenohumeral_centres(model: BiomechanicalModel) -> BiomechanicalModel:
         )
 
     joint = model.joints["Glenohumeral"]
-    model.remove_joint("Glenohumeral")
-    model._add_joint(
-        dict(
-            name="Glenohumeral",
-            joint_type=JointType.SPHERICAL,
-            parent="RSCAPULA",
-            child="RHUMERUS",
-            parent_point=GH_GLENOID,
-            child_point=GH_HEAD,
-            projection_basis=joint.projection_basis,
-            parent_basis=joint.parent_basis,
-            child_basis=joint.child_basis,
-        )
+    rebuilt = dict(
+        name="Glenohumeral",
+        joint_type=JointType.SPHERICAL,
+        parent="RSCAPULA",
+        child="RHUMERUS",
+        parent_point=GH_GLENOID,
+        child_point=GH_HEAD,
+        projection_basis=joint.projection_basis,
+        parent_basis=joint.parent_basis,
+        child_basis=joint.child_basis,
     )
+    if constraint == "constant_length":
+        rebuilt |= dict(joint_type=JointType.CONSTANT_LENGTH, length=float(length))
+
+    model.remove_joint("Glenohumeral")
+    model._add_joint(rebuilt)
     return model
 
 
@@ -376,6 +405,8 @@ def build_scapulothoracic_ellipsoid_model(
     glenohumeral: str = "spherical",
     include_humerus: bool = True,
     calibratable_gh_centres: bool = False,
+    gh_constraint: str = "spherical",
+    gh_length: float = None,
     **build_kwargs,
 ) -> BiomechanicalModel:
     """
@@ -405,8 +436,11 @@ def build_scapulothoracic_ellipsoid_model(
         ``clavicle_constraint=False`` gives the thorax-and-scapula-only model used to calibrate the
         ellipsoid on its own.
     calibratable_gh_centres
-        If True, rebuild the spherical glenohumeral joint on the dedicated ``GH_GLENOID`` /
-        ``GH_HEAD`` centres so a calibration can move them (see :func:`add_glenohumeral_centres`).
+        If True, rebuild the glenohumeral joint on the dedicated ``GH_GLENOID`` / ``GH_HEAD``
+        centres so a calibration can move them (see :func:`add_glenohumeral_centres`).
+    gh_constraint, gh_length
+        What holds those two centres together, ``"spherical"`` or ``"constant_length"`` (which needs
+        ``gh_length`` [m]). Only read when ``calibratable_gh_centres`` is True.
     """
     if joint not in ELLIPSOID_JOINTS:
         raise ValueError(f"joint must be one of {ELLIPSOID_JOINTS}, got {joint!r}")
@@ -421,7 +455,7 @@ def build_scapulothoracic_ellipsoid_model(
         **build_kwargs,
     )
     if calibratable_gh_centres:
-        add_glenohumeral_centres(model)
+        add_glenohumeral_centres(model, constraint=gh_constraint, length=gh_length)
     _add_thorax_ellipsoid_geometry(model, cx, cy, cz, rotation=rotation)
 
     ellipsoid = dict(

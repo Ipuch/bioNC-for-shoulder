@@ -1,8 +1,8 @@
 """
 Study - does the shoulder calibration generalise? Leave-one-trial-out cross-validation.
 
-A calibration that is only ever scored on the trials it was fitted to proves nothing: with 13 free
-parameters it can always improve its own training fit. So the session's 8 trials are split 8 ways.
+A calibration that is only ever scored on the trials it was fitted to proves nothing: with a dozen
+free parameters it can always improve its own training fit. So the session's 8 trials are split 8 ways.
 Each fold calibrates on 7 trials -- **including the segment geometry**, which
 :class:`~examples._shared.c3d_data.MultiC3dData` rebuilds from those 7 only -- and is then scored on
 the 8th, which the fold has never seen.
@@ -26,51 +26,54 @@ What the folds are asked:
   from one to the other says how much the two halves disagree.
 
 Run (from the repo root, inside the ``bionc`` conda env):
-    python studies/shoulder_calibration_loo.py
+    python studies/shoulder_calibration_loo.py [--gh {spherical,constant_length}]
 
-Folds are cached under ``results/loo/`` and skipped on a re-run, so an interrupted sweep resumes.
+``--gh`` picks step 3's glenohumeral joint and, with it, the tree the sweep writes into: ``results/``
+for the spherical joint, ``results_gh_constant/`` for the constant-length one. The two sweeps share
+steps 1 and 2, so their tables are comparable line for line. Note that with the constant-length
+joint the centres are frozen at step 2's answer, so this study's "step 2 -> step 3 centre drift" is
+zero by construction there -- that is the design, not a failure.
+
+Folds are cached under ``<tree>/loo/`` and skipped on a re-run, so an interrupted sweep resumes.
 This script only computes and reports; the figures live in :mod:`studies.figures.leave_one_out`,
 which reads that cache, so you can redraw them without re-solving anything.
 """
 
+import argparse
 from pathlib import Path
 
 
 import numpy as np
 
-from bionc.bionc_numpy.natural_vector import NaturalVector
-
 from examples._shared.c3d_data import MultiC3dData
-from examples._shared.frames import scs_to_natural
+from examples._shared.frames import point_in_global, scs_to_natural
 from examples._shared.ik import solve_trial
 from examples.clinical.model import build_model_constrained, build_model_free
+from studies import GLENOHUMERAL, results_root
 from studies.shoulder_calibration import (
     FRAMES_PER_TRIAL,
     MARKER_SET,
     calibrate,
     ellipsoid_surface_distance_mm,
+    gh_argument,
     to_segment_frame,
     trial_kind,
     trial_label,
     trials,
 )
 
-LOO_DIR = Path(__file__).resolve().parents[1] / "results" / "loo"
 # Every 5th frame of each full trial (20 Hz). The metric is a per-frame spatial residual, not a
 # temporal signal, so decimating costs nothing but turns three differential IK solves per
 # (fold, trial) from ~20 s into ~8 s -- the difference between a 75 and a 35 minute sweep.
 EVAL_STRIDE = 5
 
 
+def loo_dir(glenohumeral: str = GLENOHUMERAL) -> Path:
+    """Where this run's folds are cached, one directory per glenohumeral model."""
+    return results_root(glenohumeral) / "loo"
+
+
 # --------------------------------------------------------------------------------- evaluation
-def point_in_global(model, segment_name: str, position_natural, Q: np.ndarray) -> np.ndarray:
-    """Trajectory ``(3, nb_frames)`` of a segment-fixed point, given natural coordinates ``Q``."""
-    interpolation = np.asarray(NaturalVector(np.asarray(position_natural).reshape(3)).interpolate(), dtype=float)
-    segment = model.segments[segment_name]
-    block = slice(12 * segment.index, 12 * segment.index + 12)
-    return interpolation @ np.asarray(Q)[block, :]
-
-
 def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_STRIDE) -> dict:
     """
     Score one fold on one whole trial, against three references chosen to separate two effects.
@@ -134,11 +137,15 @@ def evaluate(result, free_model, reference_model, path: str, stride: int = EVAL_
 
 
 # ------------------------------------------------------------------------------------- folds
-def _fold_payload(result, evaluations, held_out: str) -> dict:
+def _fold_payload(result, evaluations, held_out: str, glenohumeral: str) -> dict:
     """Flatten a fold to the arrays and scalars worth keeping on disk."""
     payload = {
         "held_out": held_out,
         "train": np.array(result.train_paths),
+        # what step 3's glenohumeral joint was, so a replay rebuilds the model that was calibrated
+        # rather than the default one (0.0 length where there is no length to speak of)
+        "glenohumeral": glenohumeral,
+        "step3_gh_length": result.parameters.get("Glenohumeral.length", 0.0),
         "parameter_labels": np.array(list(result.parameters)),
         "parameters": np.array(list(result.parameters.values())),
         "step1_semi_axes": result.step1.sol["semi_axes"],
@@ -174,17 +181,28 @@ def _fold_payload(result, evaluations, held_out: str) -> dict:
     return payload
 
 
-def run_fold(held_out: str, paths: list[str], *, frames_per_trial: int, stride: int, cache: bool = True) -> dict:
+def run_fold(
+    held_out: str,
+    paths: list[str],
+    *,
+    frames_per_trial: int,
+    stride: int,
+    glenohumeral: str = GLENOHUMERAL,
+    cache: bool = True,
+) -> dict:
     """Calibrate on every trial but ``held_out``, then score the fold on all of them."""
-    LOO_DIR.mkdir(parents=True, exist_ok=True)
-    cache_file = LOO_DIR / f"fold_{trial_label(held_out)}.npz"
+    directory = loo_dir(glenohumeral)
+    directory.mkdir(parents=True, exist_ok=True)
+    cache_file = directory / f"fold_{trial_label(held_out)}.npz"
     if cache and cache_file.exists():
         print(f"[{trial_label(held_out)}] cached")
         return dict(np.load(cache_file, allow_pickle=True))
 
     train = [path for path in paths if path != held_out]
     print(f"[{trial_label(held_out)}] calibrating on {', '.join(trial_label(path) for path in train)}")
-    result = calibrate(train, frames_per_trial=frames_per_trial, marker_set=MARKER_SET, verbose=False)
+    result = calibrate(
+        train, frames_per_trial=frames_per_trial, marker_set=MARKER_SET, glenohumeral=glenohumeral, verbose=False
+    )
 
     # the baselines have to share the fold's geometry, or the comparison is not like for like
     data = MultiC3dData(train)
@@ -192,7 +210,7 @@ def run_fold(held_out: str, paths: list[str], *, frames_per_trial: int, stride: 
     reference_model = build_model_constrained(data, marker_set=MARKER_SET)
 
     evaluations = [evaluate(result, free_model, reference_model, path, stride=stride) for path in paths]
-    payload = _fold_payload(result, evaluations, held_out)
+    payload = _fold_payload(result, evaluations, held_out, glenohumeral)
     np.savez(cache_file, **payload)
     for line in result.summary().splitlines()[1:4]:  # the three step lines, not the parameter dump
         print(f"[{trial_label(held_out)}]{line}")
@@ -204,8 +222,12 @@ def held_out_mask(fold: dict) -> np.ndarray:
     return fold["eval_trial"] == trial_label(str(fold["held_out"]))
 
 
-def summarise(folds: list[dict]) -> str:
-    lines = ["", "===== leave-one-trial-out: marker RMSE on the held-out trial (mm) =====", ""]
+def summarise(folds: list[dict], glenohumeral: str = GLENOHUMERAL) -> str:
+    lines = [
+        "",
+        f"===== leave-one-trial-out, {glenohumeral} GH: marker RMSE on the held-out trial (mm) =====",
+        "",
+    ]
     lines.append(
         f"{'held out':<12s} {'FREE':>7s} {'uncal.':>8s} {'calib.':>8s} {'+ellips':>8s}"
         f" {'train':>7s} {'gap':>7s} {'surf RMS':>9s} {'GH gap':>8s}"
@@ -258,6 +280,13 @@ def summarise(folds: list[dict]) -> str:
         f"glenohumeral centre gap on held-out trial {mean['gh_gap']:.2f} +- {sd['gh_gap']:.2f} mm",
     ]
 
+    lengths = np.array([float(fold["step3_gh_length"]) for fold in folds if "step3_gh_length" in fold]) * 1000
+    if lengths.size and lengths.any():
+        lines.append(
+            f"calibrated GH radius {lengths.mean():.2f} +- {lengths.std():.2f} mm"
+            "   -> the held-out gap above is what that radius has to account for"
+        )
+
     lines += [
         "",
         "--- calibrated parameters across folds (mm) ---",
@@ -301,13 +330,18 @@ def write_csv(folds: list[dict], path: Path) -> None:
 
 
 def main():
+    arguments = gh_argument(argparse.ArgumentParser(description=__doc__.splitlines()[1])).parse_args()
     paths = trials()
-    folds = [run_fold(path, paths, frames_per_trial=FRAMES_PER_TRIAL, stride=EVAL_STRIDE) for path in paths]
+    folds = [
+        run_fold(path, paths, frames_per_trial=FRAMES_PER_TRIAL, stride=EVAL_STRIDE, glenohumeral=arguments.gh)
+        for path in paths
+    ]
 
-    print(summarise(folds))
-    write_csv(folds, LOO_DIR / "summary.csv")
-    print(f"\nper-(fold, trial) rows written to {LOO_DIR / 'summary.csv'}")
-    print("figures: python studies/figures/leave_one_out.py")
+    print(summarise(folds, arguments.gh))
+    summary_csv = loo_dir(arguments.gh) / "summary.csv"
+    write_csv(folds, summary_csv)
+    print(f"\nper-(fold, trial) rows written to {summary_csv}")
+    print(f"figures: python studies/figures/leave_one_out.py --gh {arguments.gh}")
 
 
 if __name__ == "__main__":

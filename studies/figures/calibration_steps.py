@@ -16,10 +16,14 @@ One figure per step, plus a summary of what closing the loop cost:
   same split by marker group, and how far step 3 had to move what steps 1 and 2 had decided.
 
 The calibration takes about a minute, so its results are cached in
-``results/calibration/steps.npz``. Pass ``--refresh`` to recompute.
+``<tree>/calibration/steps.npz``. Pass ``--refresh`` to recompute.
 
 Run:
-    python studies/figures/calibration_steps.py [--save] [--refresh]
+    python studies/figures/calibration_steps.py [--save] [--refresh] [--gh {spherical,constant_length}]
+
+With ``--gh constant_length`` the step-2 panel also draws the calibrated constant length across the
+separation it was fitted to, and the step-3 centre-drift bars read zero: that run freezes the
+centres at step 2's answer, which is what makes the length identifiable.
 """
 
 import numpy as np
@@ -28,9 +32,10 @@ from matplotlib import pyplot as plt
 from bionc import NaturalCoordinates
 
 from examples._shared.c3d_data import MultiC3dData, load_markers_multi, load_named_markers
-from examples._shared.frames import scs_to_natural
+from examples._shared.frames import point_in_global, scs_to_natural
 from examples._shared.ik import rmse_mm
 from examples.clinical.model import GH_GLENOID, GH_HEAD, build_model_free
+from studies import GLENOHUMERAL, results_root
 from studies.shoulder_calibration import (
     MARKER_SET,
     calibrate,
@@ -38,15 +43,17 @@ from studies.shoulder_calibration import (
     to_segment_frame,
     trials,
 )
-from studies.shoulder_calibration_loo import point_in_global
-from studies.figures import RESULTS_DIR, STEP_COLORS, finish, parse_args
-
-CACHE = RESULTS_DIR / "calibration" / "steps.npz"
+from studies.figures import STEP_COLORS, finish, parse_args
 
 
-def compute(paths) -> dict:
+def cache_path(glenohumeral: str = GLENOHUMERAL):
+    """Where this run's three steps are cached, one file per glenohumeral model."""
+    return results_root(glenohumeral) / "calibration" / "steps.npz"
+
+
+def compute(paths, glenohumeral: str = GLENOHUMERAL) -> dict:
     """Run the three steps once and reduce them to the arrays the figures need."""
-    result = calibrate(paths, marker_set=MARKER_SET, verbose=False)
+    result = calibrate(paths, marker_set=MARKER_SET, glenohumeral=glenohumeral, verbose=False)
     step1, step2, step3 = result.step1, result.step2, result.step3
 
     # an unconstrained reconstruction of the same frames: the yardstick the calibrated geometry is
@@ -91,6 +98,8 @@ def compute(paths) -> dict:
             scs_to_natural(result.model, "RSCAPULA", step3.centres["glenoid"]),
             scs_to_natural(result.model, "RHUMERUS", step3.centres["head"]),
         ),
+        # 0 for a spherical GH, which has no radius to speak of; plot_step2 draws it when it is not
+        gh_length_mm=np.array([result.parameters.get("Glenohumeral.length", 0.0) * 1000]),
         clavicle_measured_mm=clavicle_measured_mm,
         clavicle_calibrated_mm=np.array([step3.sol["parameters"]["Clavicle.length"] * 1000]),
         clavicle_initial_mm=np.array([step2.sol["theta0"][-1] * 1000]),
@@ -117,16 +126,17 @@ def _free_rmse(free_model, markers, Q) -> np.ndarray:
     return per_frame
 
 
-def load(paths, refresh: bool = False) -> dict:
+def load(paths, glenohumeral: str = GLENOHUMERAL, refresh: bool = False) -> dict:
     """Cached :func:`compute`."""
-    if CACHE.exists() and not refresh:
-        print(f"reusing {CACHE} (pass --refresh to recompute)")
-        return dict(np.load(CACHE))
-    print("running the three calibration steps ...")
-    arrays = compute(paths)
-    CACHE.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(CACHE, **arrays)
-    print(f"cached to {CACHE}")
+    cache = cache_path(glenohumeral)
+    if cache.exists() and not refresh:
+        print(f"reusing {cache} (pass --refresh to recompute)")
+        return dict(np.load(cache))
+    print(f"running the three calibration steps ({glenohumeral} GH) ...")
+    arrays = compute(paths, glenohumeral)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(cache, **arrays)
+    print(f"cached to {cache}")
     return arrays
 
 
@@ -228,6 +238,17 @@ def plot_step2(data: dict):
         color=STEP_COLORS["step2"],
         label=f"calibrated centres (mean {calibrated.mean():.1f} mm)",
     )
+    # the constant-length run's answer, on the very separation it was fitted to
+    gh_length = float(np.asarray(data.get("gh_length_mm", [0.0])).reshape(-1)[0])
+    if gh_length:
+        axis_gh.axhline(
+            gh_length,
+            color=STEP_COLORS["step3"],
+            lw=2,
+            ls="--",
+            label=f"calibrated constant length {gh_length:.1f} mm",
+        )
+
     axis_gh.set_xlabel("calibration frame")
     axis_gh.set_ylabel("scapula point to humerus point (mm)")
     axis_gh.set_title("the two points a spherical GH must fuse")
@@ -237,6 +258,8 @@ def plot_step2(data: dict):
     bins = np.linspace(0, max(uncalibrated.max(), calibrated.max()), 40)
     axis_hist.hist(uncalibrated, bins=bins, alpha=0.55, color="tab:blue", label="lab RGJC pair")
     axis_hist.hist(calibrated, bins=bins, alpha=0.75, color=STEP_COLORS["step2"], label="calibrated")
+    if gh_length:
+        axis_hist.axvline(gh_length, color=STEP_COLORS["step3"], lw=2, ls="--", label="constant length")
     axis_hist.set_xlabel("separation (mm)")
     axis_hist.set_ylabel("frames")
     axis_hist.set_title("calibration pulls the two centres together")
@@ -306,7 +329,19 @@ def plot_step3(data: dict):
         "humeral head\ncentre": np.linalg.norm(data["drift_head"]),
         "clavicle\nlength": abs(float(data["drift_clavicle"][0])),
     }
-    axis_drift.bar(list(drift), [value * 1000 for value in drift.values()], color="tab:purple", alpha=0.8)
+    # Step 2's glenohumeral joint is spherical, so the distance it imposes between the two centres is
+    # 0 by construction; a constant-length step 3 moves that distance to its calibrated radius. That
+    # is the one thing the constant-length run changes, so it gets a bar -- and the centres, which
+    # that run freezes, are labelled as such rather than left as unexplained empty slots.
+    gh_length = float(np.asarray(data.get("gh_length_mm", [0.0])).reshape(-1)[0]) / 1000
+    if gh_length:
+        drift["glenohumeral\nlength"] = gh_length
+    names, values_mm = list(drift), [value * 1000 for value in drift.values()]
+    colors = ["tab:red" if name.startswith("glenohumeral\nlength") else "tab:purple" for name in names]
+    axis_drift.bar(names, values_mm, color=colors, alpha=0.8)
+    for index, (name, value) in enumerate(zip(names, values_mm)):
+        frozen = gh_length and "centre" in name and name != "ellipsoid\ncentre"
+        axis_drift.text(index, value, "frozen" if frozen else f"{value:.2f}", ha="center", va="bottom", fontsize=8)
     axis_drift.set_ylabel("displacement (mm)")
     axis_drift.set_title("how far step 3 moved steps 1 and 2")
     axis_drift.grid(True, axis="y", alpha=0.25)
@@ -316,13 +351,13 @@ def plot_step3(data: dict):
 
 def main():
     arguments = parse_args(__doc__, refresh=True)
-    data = load(trials(), refresh=arguments.refresh)
+    data = load(trials(), arguments.gh, refresh=arguments.refresh)
     figures = {
         "calibration_step1_ellipsoid": plot_step1(data),
         "calibration_step2_joint_centres": plot_step2(data),
         "calibration_step3_closed_loop": plot_step3(data),
     }
-    finish(figures, arguments.save)
+    finish(figures, arguments.save, arguments.gh)
 
 
 if __name__ == "__main__":

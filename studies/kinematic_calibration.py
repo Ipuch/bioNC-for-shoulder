@@ -317,14 +317,30 @@ class EllipsoidOrientation(CalibrationParameter):
 
 
 class JointLength(CalibrationParameter):
-    """The ``length`` [m] of a CONSTANT_LENGTH joint, bounded as a fraction of its warm start."""
+    """
+    The ``length`` [m] of a CONSTANT_LENGTH joint, bounded as a fraction of its warm start.
+
+    ``bounds`` overrides that with an absolute ``(lower, upper)`` box in metres. Scaling the warm
+    start is the right default for a bone (a clavicle is within a factor of two of its measured
+    length), but says nothing useful about a length whose warm start is a few millimetres and whose
+    plausible range is set by anatomy rather than by that measurement -- the glenohumeral
+    translation radius, where a factor of two either way is both far too tight and, at the bottom,
+    close enough to zero to make the constraint singular.
+    """
 
     size = 1
 
-    def __init__(self, joint: str, scale_bounds: tuple[float, float] = (0.5, 1.5), prior: float = 0.0):
+    def __init__(
+        self,
+        joint: str,
+        scale_bounds: tuple[float, float] = (0.5, 1.5),
+        prior: float = 0.0,
+        bounds: tuple[float, float] = None,
+    ):
         self.joint = joint
         self.scale_bounds = scale_bounds
         self.prior = prior
+        self.bounds_ = bounds
 
     @property
     def labels(self):
@@ -334,6 +350,8 @@ class JointLength(CalibrationParameter):
         return np.array([float(model.joints[self.joint].length)])
 
     def bounds(self, model):
+        if self.bounds_ is not None:
+            return np.array([float(self.bounds_[0])]), np.array([float(self.bounds_[1])])
         start = self.initial(model)
         return start * self.scale_bounds[0], start * self.scale_bounds[1]
 

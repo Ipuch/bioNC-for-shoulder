@@ -14,19 +14,31 @@ estimated once, from all the trials at once, by all-frames kinematic calibration
             on two dedicated centres. -> clavicle length, glenoid centre, humeral-head centre.
             This is a SCoRE-style functional joint-centre estimation written as a constrained IK.
 
-    step 3  Everything at once, closing the loop: clavicle + ellipsoid + spherical GH, warm-started
+    step 3  Everything at once, closing the loop: clavicle + ellipsoid + glenohumeral, warm-started
             from steps 1 and 2. -> the final model, and how far step 3 had to move steps 1 and 2.
 
-Why the glenohumeral joint has no calibrated *length*: with the two centres free as well, the
-constraint is rank deficient -- if ``(c_glenoid, c_head, L)`` fits, so does ``(c_glenoid, c_head + d,
-||d||)`` for any ``d``, because ``||P_s - P_h|| = ||R_h d||`` is then constant. The centres are the
-identifiable half, so they are what is calibrated. Add ``JointLength("Glenohumeral")`` to the step-3
-parameter list once the centres are pinned by other data.
+Step 3's glenohumeral joint is the one thing this study offers in two versions, selected by
+``glenohumeral=``:
+
+    "spherical"        the two centres are made coincident (3 constraints) and step 3 re-solves them
+                       together with the ellipsoid and the clavicle. The default, and the model the
+                       ``results/`` tree describes.
+    "constant_length"  the two centres are held a calibrated distance ``L`` apart (1 constraint), so
+                       the humeral head sits anywhere on a sphere of radius ``L`` about the glenoid
+                       rather than being nailed to a point. Written into ``results_gh_constant/``.
+
+Why the *length* is calibrated only in that second version, and only with the centres frozen: with
+the two centres free as well, the constraint is rank deficient -- if ``(c_glenoid, c_head, L)`` fits,
+so does ``(c_glenoid, c_head + d, ||d||)`` for any ``d``, because ``||P_s - P_h|| = ||R_h d||`` is
+then constant. Pinning the centres at what step 2 found is exactly the condition that makes ``L``
+identifiable, so the constant-length step 3 calibrates the ellipsoid, the clavicle and ``L``, and
+leaves the two centres alone.
 
 Run (from the repo root, inside the ``bionc`` conda env):
-    python studies/shoulder_calibration.py
+    python studies/shoulder_calibration.py [--gh {spherical,constant_length}]
 """
 
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,16 +49,18 @@ from scipy.optimize import least_squares
 from bionc import NaturalCoordinates
 
 from examples._shared.c3d_data import MultiC3dData, load_markers_multi, select_calibration_frames
-from examples._shared.frames import rodrigues_matrix, segment_transformation_matrix
+from examples._shared.frames import point_in_global, rodrigues_matrix, scs_to_natural, segment_transformation_matrix
 from examples.clinical.model import (
     GH_GLENOID,
     GH_HEAD,
     add_glenohumeral_centres,
     build_model_constrained,
+    build_model_free,
     build_scapulothoracic_ellipsoid_model,
     glenohumeral_centres,
     set_glenohumeral_centres,
 )
+from studies import GLENOHUMERAL, RESULTS_ROOTS
 from studies.kinematic_calibration import (
     EllipsoidOrientation,
     EllipsoidSemiAxes,
@@ -71,6 +85,13 @@ FRAMES_PER_TRIAL = 35
 # parameter block scales this weight by its own ``prior``; the ridge is what keeps the solution
 # interior to its bounds instead of riding them, and the strength is reported, not hidden.
 PARAMETER_PRIOR = 0.02
+
+# Box for the constant-length glenohumeral radius [m]. Absolute rather than a multiple of its warm
+# start, which is itself a small measured gap: the range that means something is anatomical. The
+# floor is far enough from zero to keep the constraint Jacobian well conditioned, and a length that
+# ends up riding it is the calibration saying the data wants a spherical joint after all -- which
+# ``parameters_at_bounds`` reports rather than hides.
+GH_LENGTH_BOUNDS = (0.001, 0.050)
 
 
 def trials(data_dir: Path = DATA_DIR) -> list[str]:
@@ -336,6 +357,8 @@ def rebuild_calibrated_model(
     rotation=None,
     marker_set: str = MARKER_SET,
     ellipsoid_joint: str = "point",
+    glenohumeral: str = GLENOHUMERAL,
+    gh_length: float = None,
 ):
     """
     Rebuild a step-3 model from calibrated values alone, without re-running the optimisation.
@@ -344,6 +367,9 @@ def rebuild_calibrated_model(
     and this puts a model back together from them. The segment geometry has to come from the same
     ``train_paths`` the fold used, or the natural coordinates the parameters were expressed in no
     longer mean the same thing.
+
+    ``glenohumeral`` and ``gh_length`` have to match the run that produced the numbers -- a fold
+    caches both, so replaying one never has to guess which joint it was calibrated with.
     """
     model = build_scapulothoracic_ellipsoid_model(
         MultiC3dData([str(path) for path in train_paths]),
@@ -352,6 +378,8 @@ def rebuild_calibrated_model(
         rotation=rotation,
         marker_set=marker_set,
         calibratable_gh_centres=True,
+        gh_constraint=glenohumeral,
+        gh_length=gh_length,
     )
     set_glenohumeral_centres(model, glenoid_scs=glenoid_scs, head_scs=head_scs)
     model.joints["Clavicle"].length = float(clavicle_length)
@@ -376,17 +404,26 @@ def _ellipsoid_parameters(calibrate_orientation: bool, bounds: dict, reference: 
     return parameters
 
 
-def _joint_parameters():
+def _joint_parameters(glenohumeral: str = GLENOHUMERAL):
     """
-    The glenoid centre, the humeral-head centre and the clavicle length.
+    What the chain's joints contribute as unknowns, which depends on the glenohumeral model.
 
-    The two centres get a light ridge toward their warm start (the lab's own ``RGJC`` estimate).
-    The spherical constraint identifies them only through the *variation* of the relative
-    glenohumeral rotation, and on this dataset one direction stays nearly flat: letting the glenoid
-    travel 63 mm buys 0.01 mm of marker RMSE. Without a prior the optimiser slides freely along
-    that direction; with it, the well-determined directions still move and the flat one stays near
-    anatomy. The clavicle length needs none -- it lands on 151.3 mm whatever the starting point.
+    ``"spherical"`` -- the glenoid centre, the humeral-head centre and the clavicle length. The two
+    centres get a light ridge toward their warm start (the lab's own ``RGJC`` estimate). The
+    spherical constraint identifies them only through the *variation* of the relative glenohumeral
+    rotation, and on this dataset one direction stays nearly flat: letting the glenoid travel 63 mm
+    buys 0.01 mm of marker RMSE. Without a prior the optimiser slides freely along that direction;
+    with it, the well-determined directions still move and the flat one stays near anatomy. The
+    clavicle length needs none -- it lands on 151.3 mm whatever the starting point.
+
+    ``"constant_length"`` -- the clavicle length and the glenohumeral radius, and *not* the two
+    centres. Freeing all three at once is the rank-deficient case the module docstring describes;
+    the centres are therefore held at what step 2 decided, which leaves the radius as the one
+    unknown the constraint actually determines.
     """
+    if glenohumeral == "constant_length":
+        return [JointLength("Clavicle"), JointLength("Glenohumeral", bounds=GH_LENGTH_BOUNDS)]
+
     return [
         MarkerPosition(
             "RSCAPULA", GH_GLENOID, targets=(("Glenohumeral", "parent_point"),), half_range=0.08, prior=0.25
@@ -415,6 +452,7 @@ class _Session:
     marker_set: str
     regularization: float
     ellipsoid_joint: str
+    glenohumeral: str
     calibrate_orientation: bool
     verbose: bool
 
@@ -427,6 +465,7 @@ class _Session:
         marker_set,
         parameter_prior,
         ellipsoid_joint,
+        glenohumeral,
         calibrate_orientation,
         verbose,
     ) -> "_Session":
@@ -442,6 +481,7 @@ class _Session:
             # the marker objective grows with the frame count, so the ridge has to as well
             regularization=parameter_prior * sum(len(index) for index in frames.values()),
             ellipsoid_joint=ellipsoid_joint,
+            glenohumeral=glenohumeral,
             calibrate_orientation=calibrate_orientation,
             verbose=verbose,
         )
@@ -452,6 +492,17 @@ class _Session:
 
     def base_model(self):
         return build_model_constrained(self.data, marker_set=self.marker_set)
+
+    def free_reconstruction(self):
+        """
+        An all-FREE model of the calibration frames and its reconstruction, ``(model, Q)``.
+
+        The one reconstruction that imposes none of the geometry being calibrated, so it is what
+        anything measuring that geometry has to be read on. ``Q_from_markers`` rather than an IK:
+        with every joint free there is nothing to iterate on.
+        """
+        model = build_model_free(self.data, marker_set=self.marker_set)
+        return model, np.asarray(model.Q_from_markers(self.markers_for(model)))
 
 
 def _calibrate_ellipsoid(session: _Session) -> CalibrationStep:
@@ -505,11 +556,38 @@ def _calibrate_joint_centres(session: _Session) -> CalibrationStep:
     return step
 
 
+def _glenohumeral_length(session: _Session, step2: CalibrationStep) -> float:
+    """
+    Warm start [m] for the constant-length glenohumeral radius: how far apart step 2's two centres
+    land, on average, when nothing forces them together.
+
+    It has to be measured on an unconstrained reconstruction. Step 2's own ``Qopt`` would give ~0,
+    because its spherical joint drives that distance to zero by construction -- the separation only
+    becomes visible once the constraint is taken away. This is the same quantity the leave-one-out
+    sweep reports out of sample as ``gh_gap_mean_mm``.
+    """
+    free_model, free_Q = session.free_reconstruction()
+    glenoid, head = (
+        point_in_global(free_model, segment, scs_to_natural(step2.model, segment, step2.centres[centre]), free_Q)
+        for segment, centre in (("RSCAPULA", "glenoid"), ("RHUMERUS", "head"))
+    )
+    return float(np.mean(np.linalg.norm(glenoid - head, axis=0)))
+
+
 def _close_the_loop(session: _Session, step1: CalibrationStep, step2: CalibrationStep) -> CalibrationStep:
-    """Step 3 -- everything at once, warm-started from the two halves that were solved apart."""
+    """
+    Step 3 -- everything at once, warm-started from the two halves that were solved apart.
+
+    With ``glenohumeral="constant_length"`` the two centres are written in and then left alone: they
+    are what makes the radius identifiable, so the ellipsoid, the clavicle and that radius are the
+    unknowns and the centre drift against step 2 is zero by construction.
+    """
     rotation = step1.sol.get(
         "ellipsoid_axes_scs", step1.warm_start["rotation"] if session.calibrate_orientation else None
     )
+    constant_length = session.glenohumeral == "constant_length"
+    gh_length = float(np.clip(_glenohumeral_length(session, step2), *GH_LENGTH_BOUNDS)) if constant_length else None
+
     model = build_scapulothoracic_ellipsoid_model(
         session.data,
         (*step1.sol["semi_axes"], *step1.sol["ellipsoid_center_scs"]),
@@ -517,6 +595,8 @@ def _close_the_loop(session: _Session, step1: CalibrationStep, step2: Calibratio
         rotation=rotation,
         marker_set=session.marker_set,
         calibratable_gh_centres=True,
+        gh_constraint=session.glenohumeral,
+        gh_length=gh_length,
     )
     set_glenohumeral_centres(model, glenoid_scs=step2.centres["glenoid"], head_scs=step2.centres["head"])
     model.joints["Clavicle"].length = float(step2.sol["parameters"]["Clavicle.length"])
@@ -524,7 +604,8 @@ def _close_the_loop(session: _Session, step1: CalibrationStep, step2: Calibratio
     step = _solve_step(
         model,
         session.markers_for(model),
-        _ellipsoid_parameters(session.calibrate_orientation, step1.bounds, step1.reference) + _joint_parameters(),
+        _ellipsoid_parameters(session.calibrate_orientation, step1.bounds, step1.reference)
+        + _joint_parameters(session.glenohumeral),
         regularization=session.regularization,
         Q_init=step2.Qopt,
         verbose=session.verbose,
@@ -540,6 +621,7 @@ def calibrate(
     marker_set: str = MARKER_SET,
     calibrate_orientation: bool = False,
     ellipsoid_joint: str = "point",
+    glenohumeral: str = GLENOHUMERAL,
     parameter_prior: float = PARAMETER_PRIOR,
     verbose: bool = True,
 ) -> CalibrationResult:
@@ -549,6 +631,9 @@ def calibrate(
     Every model is built from a :class:`~examples._shared.c3d_data.MultiC3dData` over *these trials
     only*, so the segment geometry and the data-driven joint lengths are trained on the same set as
     the calibrated parameters -- what a held-out evaluation needs to stay honest.
+
+    ``glenohumeral`` selects step 3's glenohumeral joint, ``"spherical"`` or ``"constant_length"``;
+    steps 1 and 2 are the same either way, so the two runs differ in exactly one thing.
     """
     session = _Session.build(
         train_paths,
@@ -556,6 +641,7 @@ def calibrate(
         marker_set=marker_set,
         parameter_prior=parameter_prior,
         ellipsoid_joint=ellipsoid_joint,
+        glenohumeral=glenohumeral,
         calibrate_orientation=calibrate_orientation,
         verbose=verbose,
     )
@@ -569,10 +655,23 @@ def calibrate(
     )
 
 
+def gh_argument(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """The ``--gh`` flag, shared by every driver and figure so one run names one results tree."""
+    parser.add_argument(
+        "--gh",
+        default=GLENOHUMERAL,
+        choices=tuple(RESULTS_ROOTS),
+        help=f"step-3 glenohumeral joint; each writes its own results tree (default: {GLENOHUMERAL})",
+    )
+    return parser
+
+
 def main():
+    arguments = gh_argument(argparse.ArgumentParser(description=__doc__.splitlines()[1])).parse_args()
     paths = trials()
     print(f"calibrating on all {len(paths)} trials: {', '.join(trial_label(path) for path in paths)}")
-    result = calibrate(paths)
+    print(f"glenohumeral joint: {arguments.gh}")
+    result = calibrate(paths, glenohumeral=arguments.gh)
     print(result.summary())
 
 

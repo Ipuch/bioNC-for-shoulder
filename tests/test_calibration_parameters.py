@@ -6,6 +6,8 @@ of the four blocks obviously do, and the fourth solves for a rotation *increment
 capture what the increment is measured from rather than re-reading the model it has just written.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -31,6 +33,25 @@ class TestSummary:
     def test_semi_axes_report_under_their_historical_name(self):
         values = np.array([0.1, 0.2, 0.3])
         assert EllipsoidSemiAxes().summary(None, values)["semi_axes"] is values
+
+
+class TestJointLengthBounds:
+    """A length is boxed either as a fraction of its warm start or absolutely, never both."""
+
+    def test_scale_bounds_are_relative_to_the_warm_start(self):
+        parameter = JointLength("Clavicle", scale_bounds=(0.5, 1.5))
+        lower, upper = parameter.bounds(_model_with_joint_length("Clavicle", 0.150))
+        np.testing.assert_allclose([lower[0], upper[0]], [0.075, 0.225])
+
+    def test_absolute_bounds_win_and_ignore_the_warm_start(self):
+        """
+        The glenohumeral radius warm-starts at a few millimetres, where scaling says nothing useful
+        and the lower end would sit close enough to zero to make the constraint singular.
+        """
+        parameter = JointLength("Glenohumeral", bounds=(0.001, 0.050))
+        for length in (0.004, 0.020):
+            lower, upper = parameter.bounds(_model_with_joint_length("Glenohumeral", length))
+            np.testing.assert_allclose([lower[0], upper[0]], [0.001, 0.050])
 
 
 class TestEllipsoidOrientation:
@@ -77,6 +98,11 @@ class TestEllipsoidOrientation:
 
 # --------------------------------------------------------------------------------------- helpers
 AXIS_NAMES = ("AXIS_A", "AXIS_B", "AXIS_C")
+
+
+def _model_with_joint_length(joint: str, length: float):
+    """The least model ``JointLength`` reads: one joint carrying one length."""
+    return SimpleNamespace(joints={joint: SimpleNamespace(length=length)})
 
 
 def _model_with_ellipsoid_axes(clinical_model):

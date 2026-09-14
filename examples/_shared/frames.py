@@ -4,6 +4,7 @@ import numpy as np
 
 from bionc import TransformationMatrixType
 from bionc.bionc_numpy.natural_marker import NaturalMarker, SegmentNaturalVector
+from bionc.bionc_numpy.natural_vector import NaturalVector
 
 
 def rodrigues_matrix(rotation_vector) -> np.ndarray:
@@ -56,6 +57,14 @@ def scs_to_natural(model, segment_name: str, position_scs) -> np.ndarray:
     """Orthonormal segment coordinates [m] -> natural segment coordinates."""
     M = segment_transformation_matrix(model, segment_name)
     return np.linalg.solve(M, np.asarray(position_scs, dtype=float).reshape(3))
+
+
+def point_in_global(model, segment_name: str, position_natural, Q: np.ndarray) -> np.ndarray:
+    """Trajectory ``(3, nb_frames)`` of a segment-fixed point, given natural coordinates ``Q``."""
+    interpolation = np.asarray(NaturalVector(np.asarray(position_natural).reshape(3)).interpolate(), dtype=float)
+    segment = model.segments[segment_name]
+    block = slice(12 * segment.index, 12 * segment.index + 12)
+    return interpolation @ np.asarray(Q)[block, :]
 
 
 def add_marker_from_scs(model, segment_name: str, name: str, position_scs, **flags):

@@ -34,28 +34,35 @@ from examples._shared.c3d_data import MultiC3dData
 from examples._shared.ik import solve_trial
 from examples._shared.viz import ELLIPSOID_RGBA, named_bionc_model, overlay_ellipsoids
 from examples.clinical.model import build_model_free
-from studies.shoulder_calibration import MARKER_SET, rebuild_calibrated_model, trial_label, trials
-from studies.shoulder_calibration_loo import LOO_DIR
+from studies import GLENOHUMERAL
+from studies.shoulder_calibration import MARKER_SET, gh_argument, rebuild_calibrated_model, trial_label, trials
+from studies.shoulder_calibration_loo import loo_dir
 
 
-def load_fold(name: str) -> dict:
+def load_fold(name: str, glenohumeral: str = GLENOHUMERAL) -> dict:
     """The cached fold whose held-out trial is ``name``."""
-    path = LOO_DIR / f"fold_{name}.npz"
+    directory = loo_dir(glenohumeral)
+    path = directory / f"fold_{name}.npz"
     if not path.exists():
-        available = sorted(p.stem.replace("fold_", "") for p in LOO_DIR.glob("fold_*.npz"))
+        available = sorted(p.stem.replace("fold_", "") for p in directory.glob("fold_*.npz"))
         raise SystemExit(
-            f"no cached fold for {name!r} in {LOO_DIR}.\n"
+            f"no cached fold for {name!r} in {directory}.\n"
             + (
                 f"available: {', '.join(available)}"
                 if available
-                else "run `python studies/shoulder_calibration_loo.py` first."
+                else f"run `python studies/shoulder_calibration_loo.py --gh {glenohumeral}` first."
             )
         )
     return dict(np.load(path, allow_pickle=True))
 
 
 def model_from_fold(fold: dict):
-    """Rebuild that fold's step-3 model from its cached parameters."""
+    """
+    Rebuild that fold's step-3 model from its cached parameters.
+
+    The glenohumeral joint comes from the fold too, so a constant-length calibration is replayed
+    with the joint it was calibrated with rather than with the spherical default.
+    """
     return rebuild_calibrated_model(
         [str(path) for path in fold["train"]],
         semi_axes=fold["step3_semi_axes"],
@@ -65,6 +72,8 @@ def model_from_fold(fold: dict):
         clavicle_length=float(fold["step3_clavicle"]),
         rotation=fold.get("step3_axes_scs"),
         marker_set=MARKER_SET,
+        glenohumeral=str(fold.get("glenohumeral", GLENOHUMERAL)),
+        gh_length=float(fold.get("step3_gh_length", 0.0)) or None,
     )
 
 
@@ -76,14 +85,14 @@ def main():
     )
     parser.add_argument("--stride", type=int, default=1, help="frame stride for the replay (default 1)")
     parser.add_argument("--compare-free", action="store_true", help="also show the all-FREE reconstruction")
-    arguments = parser.parse_args()
+    arguments = gh_argument(parser).parse_args()
 
     by_label = {trial_label(path): path for path in trials()}
     if arguments.trial not in by_label:
         raise SystemExit(f"unknown trial {arguments.trial!r}; available: {', '.join(by_label)}")
     path = by_label[arguments.trial]
 
-    fold = load_fold(arguments.fold or arguments.trial)
+    fold = load_fold(arguments.fold or arguments.trial, arguments.gh)
     trained_on = {trial_label(str(p)) for p in fold["train"]}
     seen = arguments.trial in trained_on
     print(

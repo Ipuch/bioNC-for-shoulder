@@ -1,8 +1,8 @@
 """
 Does the calibration generalise? The leave-one-trial-out figures.
 
-Reads the folds cached by :mod:`studies.shoulder_calibration_loo` under ``results/loo/`` -- run that
-first; it is the part that takes the better part of an hour. Four figures:
+Reads the folds cached by :mod:`studies.shoulder_calibration_loo` under ``<tree>/loo/`` -- run that
+first, with the same ``--gh``; it is the part that takes the better part of an hour. Four figures:
 
 * **held-out RMSE per fold**, with the two references it has to sit between, and split by marker
   group. Calibrating the parameters improves the held-out fit; adding the scapulothoracic ellipsoid
@@ -18,23 +18,28 @@ first; it is the part that takes the better part of an hour. Four figures:
   each decided on their own.
 
 Run:
-    python studies/figures/leave_one_out.py [--save]
+    python studies/figures/leave_one_out.py [--save] [--gh {spherical,constant_length}]
 """
 
 import numpy as np
 from matplotlib import pyplot as plt
 
 from studies.shoulder_calibration import trial_kind, trial_label
-from studies.shoulder_calibration_loo import LOO_DIR, held_out_mask
+from studies import GLENOHUMERAL
+from studies.shoulder_calibration_loo import held_out_mask, loo_dir
 from studies.figures import finish, parse_args
 
 
-def load_folds() -> list[dict]:
-    """Every cached fold, in trial order. Raises if the sweep has not been run."""
-    files = sorted(LOO_DIR.glob("fold_*.npz"))
+def load_folds(glenohumeral: str = GLENOHUMERAL) -> list[dict]:
+    """Every cached fold of that run, in trial order. Raises if the sweep has not been run."""
+    directory = loo_dir(glenohumeral)
+    files = sorted(directory.glob("fold_*.npz"))
     if not files:
-        raise SystemExit(f"no folds cached in {LOO_DIR}. Run `python studies/shoulder_calibration_loo.py` first.")
-    print(f"loaded {len(files)} folds from {LOO_DIR}")
+        raise SystemExit(
+            f"no folds cached in {directory}. "
+            f"Run `python studies/shoulder_calibration_loo.py --gh {glenohumeral}` first."
+        )
+    print(f"loaded {len(files)} folds from {directory}")
     return [dict(np.load(path, allow_pickle=True)) for path in files]
 
 
@@ -105,7 +110,12 @@ def plot_parameter_spread(folds: list[dict]):
             )
         axis.errorbar(index, 0, yerr=column.std(), color="black", capsize=6, lw=1.5)
     axis.axhline(0, color="tab:gray", lw=1, ls="--")
-    axis.set_xticks(range(len(labels)), labels, rotation=60, ha="right", fontsize=8)
+    # the axis is a deviation, so without the mean itself a parameter's actual value is invisible
+    tick_labels = [
+        f"{label}\n{values[:, index].mean():.2f} ± {values[:, index].std():.2f} mm"
+        for index, label in enumerate(labels)
+    ]
+    axis.set_xticks(range(len(labels)), tick_labels, rotation=60, ha="right", fontsize=8)
     axis.set_ylabel("deviation from the across-fold mean (mm)")
     axis.grid(True, axis="y", alpha=0.25)
     axis.legend(
@@ -175,6 +185,11 @@ def plot_step_drift(folds: list[dict]):
         ),
         "clavicle length": np.abs(np.array([fold["step3_clavicle"] - fold["step2_clavicle"] for fold in folds])),
     }
+    # step 2's spherical joint imposes a 0 mm glenohumeral distance, so a constant-length step 3's
+    # radius is also how far it moved it; a spherical sweep has no such series (0 on every fold)
+    gh_length = np.array([float(fold.get("step3_gh_length", 0.0)) for fold in folds])
+    if gh_length.any():
+        series["glenohumeral length"] = gh_length
 
     figure, axis = plt.subplots(figsize=(11, 5), constrained_layout=True)
     figure.suptitle("Step 1 / step 2 -> step 3: what closing the loop changed", fontsize=14, fontweight="bold")
@@ -185,20 +200,22 @@ def plot_step_drift(folds: list[dict]):
     axis.set_ylabel("displacement (mm)")
     axis.set_xlabel("held-out trial")
     axis.grid(True, axis="y", alpha=0.25)
-    axis.legend(fontsize=9)
+    tallest = max(float(np.max(values)) for values in series.values()) * 1000
+    axis.set_ylim(0, tallest * 1.3)  # headroom so the legend clears the bars
+    axis.legend(fontsize=9, ncol=3, loc="upper center")
     return figure
 
 
 def main():
     arguments = parse_args(__doc__)
-    folds = load_folds()
+    folds = load_folds(arguments.gh)
     figures = {
         "loo_rmse": plot_rmse(folds),
         "loo_parameter_spread": plot_parameter_spread(folds),
         "loo_ellipsoid_agreement": plot_ellipsoid_agreement(folds),
         "loo_step_drift": plot_step_drift(folds),
     }
-    finish(figures, arguments.save)
+    finish(figures, arguments.save, arguments.gh)
 
 
 if __name__ == "__main__":

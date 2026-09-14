@@ -24,8 +24,8 @@ the packages are installed rather than patched onto `sys.path` at the top of eve
 | [`gh_constraint_comparison.py`](gh_constraint_comparison.py) | Henninger | How does constraining only the glenohumeral joint (free vs spherical vs constant-length) affect the marker fit (RMSE) and the joint angles, relative to a fully-free "raw" reconstruction? |
 | [`marker_set_comparison.py`](marker_set_comparison.py) | clinical | How sensitive are the reconstructed joint angles to the IK marker set (skin clusters only vs anatomical landmarks only vs both)? |
 | [`scapulothoracic_ellipsoid_calibration.py`](scapulothoracic_ellipsoid_calibration.py) | clinical | Calibrate a thoracic ellipsoid on which the scapula glides (Naaim 2016/2017) by solving one all-frames inverse kinematics whose shared variables include the ellipsoid semi-axes and centre; supports both the tangent (ELLIPSOID_ON_PLANE) and one-point (POINT_ON_ELLIPSOID) joints, and compares the scapulothoracic angles to the FREE baseline. |
-| [`shoulder_calibration.py`](shoulder_calibration.py) | `99007140-*` (8 trials) | Calibrate the whole chain from a *whole session* at once: the thoracic ellipsoid, the clavicle length, and the glenoid / humeral-head centres. Three steps, importable as `calibrate(train_paths)`. |
-| [`shoulder_calibration_loo.py`](shoulder_calibration_loo.py) | `99007140-*` (8 trials) | Does that calibration generalise? Leave-one-trial-out: 8 folds, each calibrated on 7 trials and scored on the 8th. |
+| [`shoulder_calibration.py`](shoulder_calibration.py) | `99007140-*` (8 trials) | Calibrate the whole chain from a *whole session* at once: the thoracic ellipsoid, the clavicle length, and the glenoid / humeral-head centres. Three steps, importable as `calibrate(train_paths)`. `--gh constant_length` swaps step 3's spherical glenohumeral joint for a calibrated-radius one. |
+| [`shoulder_calibration_loo.py`](shoulder_calibration_loo.py) | `99007140-*` (8 trials) | Does that calibration generalise? Leave-one-trial-out: 8 folds, each calibrated on 7 trials and scored on the 8th. Takes the same `--gh`, and each writes its own results tree. |
 
 ## The all-frames calibration engine
 
@@ -59,12 +59,27 @@ not calibrated, and its value means nothing.
    functional joint-centre estimation written as a constrained IK.
 3. **Everything at once**, closing the loop, warm-started from steps 1 and 2.
 
+Step 3 comes in two versions, chosen by `--gh` (or `calibrate(..., glenohumeral=...)`), which differ
+only in the glenohumeral joint — steps 1 and 2 are identical either way, so the two runs are
+comparable line for line:
+
+| `--gh` | Step 3's glenohumeral joint | Writes into |
+| --- | --- | --- |
+| `spherical` (default) | the two centres made coincident (3 constraints); step 3 re-solves them | `results/` |
+| `constant_length` | the two centres held a calibrated radius `L` apart (1 constraint), the centres frozen at step 2's answer | `results_gh_constant/` |
+
+The constant-length joint lives **only** on the dedicated `GH_GLENOID` / `GH_HEAD` centres. The
+template-level joint is built on the shared `RGJC` marker — one experimental marker claimed by both
+segments — so its length would be exactly 0, and at `L = 0` the constraint Jacobian
+`2 (P_s − P_h)ᵀ N` vanishes identically: a singular constraint, not a tight one.
+
 Two identifiability facts drive the design, and both are measured rather than assumed:
 
-* **The glenohumeral joint gets no calibrated length.** With the two centres free as well the
-  constraint is rank deficient: if `(c_glenoid, c_head, L)` fits, so does `(c_glenoid, c_head + d,
-  ‖d‖)` for *any* `d`, since `‖P_s − P_h‖ = ‖R_h d‖` is then constant. The centres are the
-  identifiable half. Add `JointLength("Glenohumeral")` once other data pins the centres.
+* **The glenohumeral length and the two centres cannot be calibrated together.** The constraint is
+  rank deficient: if `(c_glenoid, c_head, L)` fits, so does `(c_glenoid, c_head + d, ‖d‖)` for *any*
+  `d`, since `‖P_s − P_h‖ = ‖R_h d‖` is then constant. The spherical run therefore calibrates the
+  centres and no length; the constant-length run pins the centres at what step 2 found — exactly the
+  condition that makes `L` identifiable — and calibrates the radius instead.
 * **A contact patch does not determine an ellipsoid.** The scapula sweeps roughly 55 × 52 × 67 mm on
   this subject; across that patch the best-fit surface residual moves by **0.05 mm** as the radius
   goes from 80 mm to 300 mm, against a **5.1 mm** noise floor — a curvature signal two orders of
@@ -86,15 +101,23 @@ python studies/figures/frame_selection_replay.py   # rerun: the calibration fram
 ```
 
 Each script runs either as a plain file (above) or as `python -m studies.figures.<name>`. `--save`
-writes PNGs to `results/figures/` instead of opening windows; `--refresh` recomputes a script's own
-cache (`calibration_steps.py` keeps one in `results/calibration/steps.npz`). `leave_one_out.py` and
+writes PNGs to `<tree>/figures/` instead of opening windows; `--refresh` recomputes a script's own
+cache (`calibration_steps.py` keeps one in `<tree>/calibration/steps.npz`). `leave_one_out.py` and
 `replay_calibrated.py` need `shoulder_calibration_loo.py` to have run first.
+
+`--gh` picks which tree a figure reads and writes, and has to match the run that produced it — pass
+the same value you gave the driver:
+
+```bash
+python studies/shoulder_calibration_loo.py --gh constant_length     # ~35 min, resumable
+python studies/figures/leave_one_out.py    --gh constant_length --save
+```
 
 | Script | Answers |
 | --- | --- |
 | [`figures/frame_selection.py`](figures/frame_selection.py) | Posture latent space (PCA) with the selected frames on top; coverage radius vs frame budget, farthest-point against a uniform stride; per-angle range covered; and the contact-point patch that limits the ellipsoid. |
 | [`figures/calibration_steps.py`](figures/calibration_steps.py) | One figure per step: the ellipsoid cut through the contact patch with before/after surface residuals; the two glenohumeral centres and the clavicle scatter a constant length has to absorb; the per-frame fit of every step against the FREE floor plus the step 1/2 → step 3 drift. |
-| [`figures/leave_one_out.py`](figures/leave_one_out.py) | The four cross-validation figures, read from `results/loo/`. |
+| [`figures/leave_one_out.py`](figures/leave_one_out.py) | The four cross-validation figures, read from `<tree>/loo/`. |
 | [`figures/replay_calibrated.py`](figures/replay_calibrated.py) | **rerun replay of any trial with any fold's calibrated model**, with the experimental markers, the thoracic ellipsoid riding on the thorax and the contact point riding on the scapula. **Needs a graphical session.** |
 | [`figures/frame_selection_replay.py`](figures/frame_selection_replay.py) | rerun replay of *only* the calibration frames, to look at the postures themselves. **Needs a graphical session.** |
 
@@ -123,9 +146,10 @@ coverage curve flattens around 25–35 frames, which is where the budget was set
 
 ## Reading the leave-one-out results
 
-`shoulder_calibration_loo.py` caches each fold under `results/loo/` (gitignored) and skips folds
-already computed, so an interrupted sweep resumes. It writes `results/loo/summary.csv` with one row
-per (fold, evaluated trial); the figures come from `figures/leave_one_out.py`.
+`shoulder_calibration_loo.py` caches each fold under `<tree>/loo/` (gitignored) and skips folds
+already computed, so an interrupted sweep resumes. It writes `<tree>/loo/summary.csv` with one row
+per (fold, evaluated trial); the figures come from `figures/leave_one_out.py`. Each `--gh` fills its
+own tree, so running the constant-length sweep never touches the spherical one's folds.
 
 **Score four models, not two.** Calibrating the parameters should improve the held-out fit, while
 adding the scapulothoracic ellipsoid removes a degree of freedom and can only worsen it. Comparing
